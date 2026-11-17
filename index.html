@@ -1,0 +1,1065 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Hatch-Clone Studio — Embroidery Digitizer & Stitch Viewport</title>
+  <style>
+    :root {
+      --bg-dark: #181a1f;
+      --bg-panel: #21252b;
+      --bg-header: #282c34;
+      --bg-input: #1b1d23;
+      --border: #333842;
+      --text-main: #e6e6e6;
+      --text-muted: #9da5b4;
+      --accent: #1e90ff;
+      --accent-hover: #3aa0ff;
+      --canvas-bg: #f0f0f0;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; user-select: none; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background-color: var(--bg-dark);
+      color: var(--text-main);
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    header {
+      height: 48px;
+      background: var(--bg-header);
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 16px;
+      gap: 16px;
+    }
+    .brand { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 15px; }
+    .brand-badge {
+      width: 24px; height: 24px; border-radius: 6px;
+      background: linear-gradient(135deg, #1e90ff, #0051a8);
+      display: inline-flex; align-items: center; justify-content: center;
+      font-size: 13px; color: #fff;
+    }
+    .top-actions { display: flex; align-items: center; gap: 8px; }
+    button, .btn-label {
+      background: var(--bg-panel); color: var(--text-main);
+      border: 1px solid var(--border); padding: 6px 12px;
+      border-radius: 5px; font-size: 12px; font-weight: 500;
+      cursor: pointer; display: inline-flex; align-items: center; gap: 6px;
+      transition: background 0.15s, border-color 0.15s;
+    }
+    button:hover, .btn-label:hover { background: #2c313a; border-color: #4b5263; }
+    button.active, button.primary {
+      background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600;
+    }
+    button.primary:hover { background: var(--accent-hover); }
+    .workspace {
+      flex: 1; display: grid;
+      grid-template-columns: 280px 1fr 270px;
+      min-height: 0;
+    }
+    .panel {
+      background: var(--bg-panel); border-right: 1px solid var(--border);
+      display: flex; flex-direction: column; overflow-y: auto;
+    }
+    .panel.right { border-right: none; border-left: 1px solid var(--border); }
+    .section { padding: 14px; border-bottom: 1px solid var(--border); }
+    .section-title {
+      font-size: 11px; font-weight: 700; text-transform: uppercase;
+      letter-spacing: 0.8px; color: var(--text-muted); margin-bottom: 12px;
+    }
+    .control-group { margin-bottom: 12px; }
+    .control-group:last-child { margin-bottom: 0; }
+    .control-label {
+      display: flex; justify-content: space-between;
+      font-size: 12px; margin-bottom: 5px; color: var(--text-main);
+    }
+    .control-value { color: var(--accent); font-variant-numeric: tabular-nums; font-weight: 600; }
+    select, input[type="number"] {
+      width: 100%; background: var(--bg-input); color: var(--text-main);
+      border: 1px solid var(--border); padding: 7px 9px; border-radius: 4px; font-size: 12px;
+    }
+    input[type="range"] { width: 100%; accent-color: var(--accent); cursor: pointer; }
+    .viewport-container {
+      position: relative; display: flex; flex-direction: column;
+      background: #dcdcdc; min-width: 0; min-height: 0;
+    }
+    #stitchCanvas { flex: 1; width: 100%; height: 100%; cursor: grab; display: block; }
+    #stitchCanvas:active { cursor: grabbing; }
+    .viewport-overlay {
+      position: absolute; top: 12px; left: 12px;
+      background: rgba(24, 26, 31, 0.85); backdrop-filter: blur(6px);
+      padding: 8px 12px; border-radius: 6px; border: 1px solid var(--border);
+      font-size: 11px; color: var(--text-muted); pointer-events: none;
+      display: flex; gap: 14px;
+    }
+    .viewport-overlay span b { color: #fff; }
+    .player-bar {
+      height: 46px; background: var(--bg-header); border-top: 1px solid var(--border);
+      display: flex; align-items: center; padding: 0 14px; gap: 10px;
+    }
+    .player-scrubber { flex: 1; }
+    .swatch-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+    .swatch {
+      height: 30px; border-radius: 5px; border: 2px solid transparent;
+      cursor: pointer; transition: transform 0.1s;
+    }
+    .swatch:hover { transform: scale(1.05); }
+    .swatch.selected { border-color: #fff; box-shadow: 0 0 0 2px var(--accent); }
+    .stat-row {
+      display: flex; justify-content: space-between; padding: 6px 0;
+      border-bottom: 1px dashed rgba(255, 255, 255, 0.07); font-size: 12px;
+    }
+    .stat-row:last-child { border-bottom: none; }
+    .stat-val { font-weight: 600; font-variant-numeric: tabular-nums; }
+    #imagePreviewBox {
+      width: 100%; height: 86px; background: var(--bg-input);
+      border: 1px dashed var(--border); border-radius: 5px;
+      display: flex; align-items: center; justify-content: center;
+      overflow: hidden; margin-top: 8px; font-size: 11px; color: var(--text-muted);
+    }
+    #imagePreviewBox canvas { max-width: 100%; max-height: 100%; object-fit: contain; }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <span class="brand-badge">H</span>
+      <span>Image Digitizer Studio <small style="color:var(--text-muted);font-weight:400;">| TrueView Stitch Viewport</small></span>
+    </div>
+    <div class="top-actions">
+      <button id="btnTrueView" class="active" title="Toggle 3D Thread TrueView">TrueView 3D</button>
+      <button id="btnNeedlePts" class="active" title="Show Needle Penetrations">Needle Drops</button>
+      <button id="btnGrid" class="active" title="Show 10mm Hoop Grid">Grid &amp; Hoop</button>
+      <button id="btnFitView" title="Fit Design in Viewport">Fit to Screen</button>
+      <button id="btnExportDst" class="primary" title="Export Tajima .DST Binary File">Export .DST</button>
+    </div>
+  </header>
+
+  <div class="workspace">
+    <!-- Left Toolbox: Artwork & Auto-Digitize Settings -->
+    <aside class="panel">
+      <div class="section">
+        <div class="section-title">1. Artwork Preparation</div>
+        <div class="control-group">
+          <div class="control-label"><span>Source Shape / Image</span></div>
+          <select id="shapePreset">
+            <option value="square">Square Patch (60 × 60 mm)</option>
+            <option value="circle">Circle Badge (Ø 65 mm)</option>
+            <option value="star" selected>5-Point Star (75 mm)</option>
+            <option value="heart">Embroidered Heart (70 mm)</option>
+            <option value="image">Custom Uploaded Bitmap</option>
+          </select>
+        </div>
+        <div class="control-group">
+          <label class="btn-label" style="width:100%;justify-content:center;">
+            <span>Upload Bitmap (PNG / JPG / SVG)</span>
+            <input type="file" id="imageInput" accept="image/*" style="display:none;" />
+          </label>
+          <div id="imagePreviewBox">No bitmap loaded (using preset)</div>
+        </div>
+        <div class="control-group">
+          <div class="control-label">
+            <span>Bitmap Threshold</span>
+            <span class="control-value" id="valThreshold">128</span>
+          </div>
+          <input type="range" id="inpThreshold" min="20" max="235" step="1" value="128" />
+        </div>
+      </div>
+
+      <div class="section">
+        <div class="section-title">2. Auto-Digitize Method</div>
+        <div class="control-group">
+          <div class="control-label"><span>Stitch Engine Mode</span></div>
+          <select id="stitchMode">
+            <option value="tatami" selected>Method A: Tatami Fill (Parallel)</option>
+            <option value="concentric">Method A: Concentric Contour Fill</option>
+            <option value="satin_border">Method C: Satin Turning Border</option>
+            <option value="running">Method C: Running Stitch Outline</option>
+            <option value="photostitch">Method B: PhotoStitch (Variegated)</option>
+          </select>
+        </div>
+        <div class="control-group">
+          <div class="control-label">
+            <span>Stitch Length</span>
+            <span class="control-value" id="valStitchLen">3.2 mm</span>
+          </div>
+          <input type="range" id="inpStitchLen" min="1.2" max="7.0" step="0.1" value="3.2" />
+        </div>
+        <div class="control-group">
+          <div class="control-label">
+            <span>Row Spacing (Density)</span>
+            <span class="control-value" id="valRowSpacing">0.60 mm</span>
+          </div>
+          <input type="range" id="inpRowSpacing" min="0.25" max="2.5" step="0.05" value="0.60" />
+        </div>
+        <div class="control-group">
+          <div class="control-label">
+            <span>Stitch Angle</span>
+            <span class="control-value" id="valAngle">30°</span>
+          </div>
+          <input type="range" id="inpAngle" min="0" max="175" step="5" value="30" />
+        </div>
+        <div class="control-group">
+          <div class="control-label"><span>Target Hoop Size</span></div>
+          <select id="hoopSize">
+            <option value="100">100 × 100 mm (4" × 4")</option>
+            <option value="150" selected>150 × 150 mm (6" × 6" Optimal)</option>
+            <option value="200">200 × 200 mm (8" × 8" Large)</option>
+          </select>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Center Interactive StitchViewport -->
+    <main class="viewport-container">
+      <div class="viewport-overlay">
+        <span>Cursor: <b id="coordReadout">X: 0.0 mm, Y: 0.0 mm</b></span>
+        <span>Zoom: <b id="zoomReadout">100%</b></span>
+        <span>Units: <b>0.1 mm Machine Scale</b></span>
+      </div>
+      <canvas id="stitchCanvas"></canvas>
+
+      <div class="player-bar">
+        <button id="btnPlayPause" style="min-width:74px;">&#9654; Play</button>
+        <button id="btnStepBack" title="Step Backward 1 Stitch">&#9664;|</button>
+        <button id="btnStepFwd" title="Step Forward 1 Stitch">|&#9654;</button>
+        <input type="range" id="stitchScrubber" class="player-scrubber" min="1" max="100" value="100" />
+        <select id="playSpeed" style="width:78px;">
+          <option value="2">1x</option>
+          <option value="10" selected>5x</option>
+          <option value="35">20x</option>
+          <option value="100">Max</option>
+        </select>
+        <span id="playerCounter" style="font-size:12px;min-width:115px;text-align:right;font-variant-numeric:tabular-nums;">0 / 0</span>
+      </div>
+    </main>
+
+    <!-- Right Panel: Threads Docker & Telemetry -->
+    <aside class="panel right">
+      <div class="section">
+        <div class="section-title">Threads Docker (Madeira Chart)</div>
+        <div class="swatch-grid" id="threadPalette"></div>
+      </div>
+
+      <div class="section">
+        <div class="section-title">Design Telemetry</div>
+        <div class="stat-row"><span>Total Stitches</span><span class="stat-val" id="statStitches">0</span></div>
+        <div class="stat-row"><span>Jump Stitches (&gt;7mm)</span><span class="stat-val" id="statJumps">0</span></div>
+        <div class="stat-row"><span>Total Thread Length</span><span class="stat-val" id="statThread">0.0 m</span></div>
+        <div class="stat-row"><span>Design Width</span><span class="stat-val" id="statWidth">0.0 mm</span></div>
+        <div class="stat-row"><span>Design Height</span><span class="stat-val" id="statHeight">0.0 mm</span></div>
+        <div class="stat-row"><span>Est. Machine Time (750 spm)</span><span class="stat-val" id="statTime">0m 00s</span></div>
+      </div>
+
+      <div class="section">
+        <div class="section-title">Viewport Controls</div>
+        <p style="font-size:11px;color:var(--text-muted);line-height:1.5;">
+          &bull; <b>Drag</b> on the canvas to pan.<br/>
+          &bull; <b>Mouse Wheel</b> to zoom around cursor.<br/>
+          &bull; Use <b>Stitch Player</b> below the canvas to simulate needle penetrations.<br/>
+          &bull; Click <b>Export .DST</b> to download a binary Tajima machine file.
+        </p>
+      </div>
+    </aside>
+  </div>
+  <script>
+    // =========================================================================
+    // 1. Thread Palette (Madeira Classic Rayon Colors) & App State
+    // =========================================================================
+    const MADEIRA_THREADS = [
+      { code: "1076", name: "Royal Blue", hex: "#1e90ff" },
+      { code: "1147", name: "Christmas Red", hex: "#e62e2d" },
+      { code: "1251", name: "Emerald Green", hex: "#19a974" },
+      { code: "1024", name: "Goldenrod", hex: "#f5a623" },
+      { code: "1321", name: "Bubblegum Pink", hex: "#ff5c8d" },
+      { code: "1311", name: "Deep Violet", hex: "#8e44ad" },
+      { code: "1095", name: "Turquoise", hex: "#00bcd4" },
+      { code: "1001", name: "Super White", hex: "#f8f9fa" },
+      { code: "1000", name: "Jet Black", hex: "#212529" },
+      { code: "1126", name: "Burnt Orange", hex: "#e67e22" },
+      { code: "1069", name: "Sun Yellow", hex: "#ffd60a" },
+      { code: "1181", name: "Wine Berry", hex: "#9b2226" }
+    ];
+
+    const state = {
+      shapePreset: "star",
+      stitchMode: "tatami",
+      stitchLengthMm: 3.2,
+      rowSpacingMm: 0.60,
+      angleDeg: 30,
+      threshold: 128,
+      hoopSizeMm: 150,
+      threadColor: MADEIRA_THREADS[0].hex,
+      trueView: true,
+      showNeedles: true,
+      showGrid: true,
+
+      // Viewport camera (center of canvas = (0,0) mm)
+      panX: 0,
+      panY: 0,
+      zoomPxPerMm: 4.2,
+
+      // Generated stitch list: Array of { x: mm, y: mm, jump?: boolean }
+      stitches: [],
+      visibleCount: 0,
+      isPlaying: false,
+      uploadedImage: null,
+      bitmapMask: null, // { width, height, data }
+    };
+
+    // =========================================================================
+    // 2. Geometric & Vector Shape Generators (Physical Millimeter Coordinates)
+    // =========================================================================
+    function getPresetPolygonMm(preset) {
+      const pts = [];
+      if (preset === "square") {
+        const s = 30;
+        return [[-s, -s], [s, -s], [s, s], [-s, s]];
+      }
+      if (preset === "circle") {
+        const r = 32.5, n = 64;
+        for (let i = 0; i < n; i++) {
+          const a = (i / n) * Math.PI * 2;
+          pts.push([Math.cos(a) * r, Math.sin(a) * r]);
+        }
+        return pts;
+      }
+      if (preset === "star") {
+        const rOuter = 38, rInner = 16, spikes = 5;
+        for (let i = 0; i < spikes * 2; i++) {
+          const r = i % 2 === 0 ? rOuter : rInner;
+          const a = (i / (spikes * 2)) * Math.PI * 2 - Math.PI / 2;
+          pts.push([Math.cos(a) * r, Math.sin(a) * r]);
+        }
+        return pts;
+      }
+      if (preset === "heart") {
+        const n = 80;
+        for (let i = 0; i < n; i++) {
+          const t = (i / n) * Math.PI * 2;
+          const x = 16 * Math.pow(Math.sin(t), 3);
+          const y = -(13 * Math.cos(t) - 5 * Math.cos(2 * t) - 2 * Math.cos(3 * t) - Math.cos(4 * t));
+          pts.push([x * 2.1, y * 2.1]);
+        }
+        return pts;
+      }
+      return [[-25, -25], [25, -25], [25, 25], [-25, 25]];
+    }
+
+    function rotatePoint(x, y, rad) {
+      const c = Math.cos(rad), s = Math.sin(rad);
+      return [x * c - y * s, x * s + y * c];
+    }
+
+    function pointInPolygon(x, y, poly) {
+      let inside = false;
+      for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+        const xi = poly[i][0], yi = poly[i][1];
+        const xj = poly[j][0], yj = poly[j][1];
+        const intersect = ((yi > y) !== (yj > y)) &&
+          (x < ((xj - xi) * (y - yi)) / (yj - yi + 1e-12) + xi);
+        if (intersect) inside = !inside;
+      }
+      return inside;
+    }
+
+    // Extract polygon from uploaded bitmap via radial/marching boundary or scanline mask
+    function isInsideShapeMm(xMm, yMm, poly) {
+      if (state.shapePreset === "image" && state.bitmapMask) {
+        const { width, height, gray } = state.bitmapMask;
+        // Map [-45..45] mm to bitmap pixels
+        const spanMm = 80;
+        const u = Math.floor(((xMm + spanMm / 2) / spanMm) * width);
+        const v = Math.floor(((yMm + spanMm / 2) / spanMm) * height);
+        if (u < 0 || u >= width || v < 0 || v >= height) return false;
+        return gray[v * width + u] < state.threshold;
+      }
+      return pointInPolygon(xMm, yMm, poly);
+    }
+
+    // =========================================================================
+    // 3. Stitch Engine Algorithms (Tatami, Concentric, Satin, Running, PhotoStitch)
+    // =========================================================================
+    function sampleClosedRing(ring, stitchLenMm) {
+      if (!ring.length) return [];
+      const out = [{ x: ring[0][0], y: ring[0][1] }];
+      let curr = ring[0];
+
+      for (let i = 1; i <= ring.length; i++) {
+        const next = ring[i % ring.length];
+        const dx = next[0] - curr[0];
+        const dy = next[1] - curr[1];
+        const segLen = Math.hypot(dx, dy);
+        if (segLen >= stitchLenMm) {
+          const steps = Math.max(1, Math.floor(segLen / stitchLenMm));
+          for (let s = 1; s <= steps; s++) {
+            const t = s / steps;
+            out.push({ x: curr[0] + dx * t, y: curr[1] + dy * t });
+          }
+          curr = next;
+        }
+      }
+      return out;
+    }
+
+    function generateRunningStitchMm(poly, stitchLenMm) {
+      return sampleClosedRing(poly, stitchLenMm);
+    }
+
+    function generateSatinBorderMm(poly, spacingMm) {
+      const ring = sampleClosedRing(poly, Math.max(0.45, spacingMm));
+      const widthMm = 3.2;
+      const out = [];
+      for (let i = 0; i < ring.length; i++) {
+        const pPrev = ring[(i - 1 + ring.length) % ring.length];
+        const pNext = ring[(i + 1) % ring.length];
+        const tx = pNext.x - pPrev.x;
+        const ty = pNext.y - pPrev.y;
+        const len = Math.hypot(tx, ty) || 1;
+        const nx = -ty / len;
+        const ny = tx / len;
+        const half = widthMm * 0.5;
+        out.push({ x: ring[i].x + nx * half, y: ring[i].y + ny * half });
+        out.push({ x: ring[i].x - nx * half, y: ring[i].y - ny * half });
+      }
+      return out;
+    }
+
+    function generateConcentricFillMm(poly, stitchLenMm, rowSpacingMm) {
+      const out = [];
+      const maxRadius = 40;
+      const stepScale = Math.max(0.02, rowSpacingMm / maxRadius);
+      for (let scale = 1.0; scale >= 0.04; scale -= stepScale) {
+        const scaledPoly = poly.map(([x, y]) => [x * scale, y * scale]);
+        out.push(...sampleClosedRing(scaledPoly, stitchLenMm));
+      }
+      return out;
+    }
+
+    function generateTatamiFillMm(poly, stitchLenMm, rowSpacingMm, angleDeg) {
+      const rad = (angleDeg * Math.PI) / 180;
+      const bound = 48;
+      const stepX = 0.4;
+      const out = [];
+      let rowIndex = 0;
+
+      for (let yRot = -bound; yRot <= bound; yRot += rowSpacingMm) {
+        const runs = [];
+        let inRun = false;
+        let runStart = 0;
+
+        for (let xRot = -bound; xRot <= bound; xRot += stepX) {
+          const [wx, wy] = rotatePoint(xRot, yRot, rad);
+          const inside = isInsideShapeMm(wx, wy, poly);
+          if (inside && !inRun) {
+            inRun = true;
+            runStart = xRot;
+          } else if (!inside && inRun) {
+            inRun = false;
+            runs.push([runStart, xRot - stepX]);
+          }
+        }
+        if (inRun) runs.push([runStart, bound]);
+
+        const stagger = (rowIndex % 3) * (stitchLenMm / 3.0);
+        const rowPts = [];
+
+        for (const [x0, x1] of runs) {
+          if (x1 - x0 < 0.4) continue;
+          const segPts = [[x0, yRot]];
+          let xc = x0 + (stitchLenMm - stagger);
+          while (xc < x1) {
+            segPts.push([xc, yRot]);
+            xc += stitchLenMm;
+          }
+          segPts.push([x1, yRot]);
+
+          if (rowIndex % 2 === 1) segPts.reverse();
+          for (const [rx, ry] of segPts) {
+            const [wx, wy] = rotatePoint(rx, ry, rad);
+            rowPts.push({ x: wx, y: wy });
+          }
+        }
+        out.push(...rowPts);
+        rowIndex++;
+      }
+      return out;
+    }
+
+    function generatePhotoStitchMm(poly, stitchLenMm, rowSpacingMm) {
+      const out = [];
+      const bound = 42;
+      const rowStep = Math.max(1.2, rowSpacingMm * 2.2);
+      let rowIndex = 0;
+
+      for (let y = -bound; y <= bound; y += rowStep) {
+        const rowPts = [];
+        for (let x = -bound; x <= bound; x += stitchLenMm * 0.45) {
+          let darkness = 0.65;
+          if (state.bitmapMask) {
+            const { width, height, gray } = state.bitmapMask;
+            const u = Math.floor(((x + 40) / 80) * width);
+            const v = Math.floor(((y + 40) / 80) * height);
+            if (u >= 0 && u < width && v >= 0 && v < height) {
+              darkness = 1.0 - gray[v * width + u] / 255.0;
+            } else {
+              darkness = 0;
+            }
+          } else if (!pointInPolygon(x, y, poly)) {
+            darkness = 0;
+          }
+
+          if (darkness > 0.12) {
+            const amp = darkness * rowStep * 0.55;
+            rowPts.push({ x, y: y - amp });
+            rowPts.push({ x: x + stitchLenMm * 0.22, y: y + amp });
+          }
+        }
+        if (rowIndex % 2 === 1) rowPts.reverse();
+        out.push(...rowPts);
+        rowIndex++;
+      }
+      return out;
+    }
+
+    function regenerateDesign() {
+      const poly = getPresetPolygonMm(state.shapePreset);
+      let raw = [];
+
+      if (state.stitchMode === "tatami") {
+        raw = generateTatamiFillMm(poly, state.stitchLengthMm, state.rowSpacingMm, state.angleDeg);
+      } else if (state.stitchMode === "concentric") {
+        raw = generateConcentricFillMm(poly, state.stitchLengthMm, state.rowSpacingMm);
+      } else if (state.stitchMode === "satin_border") {
+        raw = generateSatinBorderMm(poly, state.rowSpacingMm);
+      } else if (state.stitchMode === "running") {
+        raw = generateRunningStitchMm(poly, state.stitchLengthMm);
+      } else {
+        raw = generatePhotoStitchMm(poly, state.stitchLengthMm, state.rowSpacingMm);
+      }
+
+      for (let i = 1; i < raw.length; i++) {
+        const dist = Math.hypot(raw[i].x - raw[i - 1].x, raw[i].y - raw[i - 1].y);
+        raw[i].jump = dist > 7.0;
+      }
+
+      state.stitches = raw;
+      state.visibleCount = raw.length;
+      const scrubber = document.getElementById("stitchScrubber");
+      scrubber.max = Math.max(1, raw.length);
+      scrubber.value = raw.length;
+      updateTelemetry();
+      renderViewport();
+    }
+
+    // =========================================================================
+    // 4. Interactive StitchViewport Renderer (TrueView 3D + Hoop Grid)
+    // =========================================================================
+    const canvas = document.getElementById("stitchCanvas");
+    const ctx = canvas.getContext("2d");
+
+    function resizeCanvas() {
+      const rect = canvas.parentElement.getBoundingClientRect();
+      const dpr = window.devicePixelRatio || 1;
+      canvas.width = rect.width * dpr;
+      canvas.height = (rect.height - 46) * dpr;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      renderViewport();
+    }
+
+    function mmToScreen(xMm, yMm) {
+      const w = canvas.width / (window.devicePixelRatio || 1);
+      const h = canvas.height / (window.devicePixelRatio || 1);
+      return [
+        w * 0.5 + state.panX + xMm * state.zoomPxPerMm,
+        h * 0.5 + state.panY + yMm * state.zoomPxPerMm
+      ];
+    }
+
+    function screenToMm(sx, sy) {
+      const w = canvas.width / (window.devicePixelRatio || 1);
+      const h = canvas.height / (window.devicePixelRatio || 1);
+      return [
+        (sx - w * 0.5 - state.panX) / state.zoomPxPerMm,
+        (sy - h * 0.5 - state.panY) / state.zoomPxPerMm
+      ];
+    }
+
+    function renderViewport() {
+      const dpr = window.devicePixelRatio || 1;
+      const w = canvas.width / dpr;
+      const h = canvas.height / dpr;
+
+      ctx.clearRect(0, 0, w, h);
+      ctx.fillStyle = "#f0f0f0";
+      ctx.fillRect(0, 0, w, h);
+
+      // Draw 10mm physical grid & hoop boundary
+      if (state.showGrid) {
+        const halfHoop = state.hoopSizeMm * 0.5;
+        const [hx0, hy0] = mmToScreen(-halfHoop, -halfHoop);
+        const [hx1, hy1] = mmToScreen(halfHoop, halfHoop);
+
+        ctx.fillStyle = "#f9f9fb";
+        ctx.fillRect(hx0, hy0, hx1 - hx0, hy1 - hy0);
+
+        ctx.strokeStyle = "rgba(0,0,0,0.06)";
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        for (let m = -halfHoop; m <= halfHoop; m += 10) {
+          const [gx] = mmToScreen(m, 0);
+          const [, gy] = mmToScreen(0, m);
+          ctx.moveTo(gx, hy0);
+          ctx.lineTo(gx, hy1);
+          ctx.moveTo(hx0, gy);
+          ctx.lineTo(hx1, gy);
+        }
+        ctx.stroke();
+
+        // Center axes
+        const [cx, cy] = mmToScreen(0, 0);
+        ctx.strokeStyle = "rgba(30,144,255,0.25)";
+        ctx.beginPath();
+        ctx.moveTo(hx0, cy); ctx.lineTo(hx1, cy);
+        ctx.moveTo(cx, hy0); ctx.lineTo(cx, hy1);
+        ctx.stroke();
+
+        // Hoop outer frame
+        ctx.strokeStyle = "#8c939e";
+        ctx.lineWidth = 2;
+        ctx.strokeRect(hx0, hy0, hx1 - hx0, hy1 - hy0);
+      }
+
+      const pts = state.stitches;
+      const count = Math.min(state.visibleCount, pts.length);
+      if (count < 2) return;
+
+      ctx.lineCap = "round";
+      ctx.lineJoin = "round";
+
+      // 1. Render Jump Stitches (dashed lines)
+      ctx.save();
+      ctx.setLineDash([4, 4]);
+      ctx.strokeStyle = "rgba(220, 53, 69, 0.55)";
+      ctx.lineWidth = 1.0;
+      ctx.beginPath();
+      for (let i = 1; i < count; i++) {
+        if (pts[i].jump) {
+          const [x1, y1] = mmToScreen(pts[i - 1].x, pts[i - 1].y);
+          const [x2, y2] = mmToScreen(pts[i].x, pts[i].y);
+          ctx.moveTo(x1, y1);
+          ctx.lineTo(x2, y2);
+        }
+      }
+      ctx.stroke();
+      ctx.restore();
+
+      // 2. Render Thread Segments (TrueView 3D vs Flat Technical View)
+      const threadWidthPx = Math.max(1.2, 0.42 * state.zoomPxPerMm);
+
+      if (state.trueView) {
+        // Under-shadow for 3D thread depth
+        ctx.strokeStyle = "rgba(0,0,0,0.28)";
+        ctx.lineWidth = threadWidthPx * 1.25;
+        ctx.beginPath();
+        for (let i = 1; i < count; i++) {
+          if (pts[i].jump) continue;
+          const [x1, y1] = mmToScreen(pts[i - 1].x, pts[i - 1].y);
+          const [x2, y2] = mmToScreen(pts[i].x, pts[i].y);
+          ctx.moveTo(x1 + 0.7, y1 + 0.9);
+          ctx.lineTo(x2 + 0.7, y2 + 0.9);
+        }
+        ctx.stroke();
+      }
+
+      // Main thread body
+      ctx.strokeStyle = state.threadColor;
+      ctx.lineWidth = state.trueView ? threadWidthPx : Math.max(1.2, 0.25 * state.zoomPxPerMm);
+      ctx.beginPath();
+      for (let i = 1; i < count; i++) {
+        if (pts[i].jump) continue;
+        const [x1, y1] = mmToScreen(pts[i - 1].x, pts[i - 1].y);
+        const [x2, y2] = mmToScreen(pts[i].x, pts[i].y);
+        ctx.moveTo(x1, y1);
+        ctx.lineTo(x2, y2);
+      }
+      ctx.stroke();
+
+      if (state.trueView) {
+        // Specular sheen highlight on rayon thread
+        ctx.strokeStyle = "rgba(255,255,255,0.32)";
+        ctx.lineWidth = Math.max(0.6, threadWidthPx * 0.32);
+        ctx.beginPath();
+        for (let i = 1; i < count; i++) {
+          if (pts[i].jump) continue;
+          const [x1, y1] = mmToScreen(pts[i - 1].x, pts[i - 1].y);
+          const [x2, y2] = mmToScreen(pts[i].x, pts[i].y);
+          ctx.moveTo(x1 - 0.3, y1 - 0.3);
+          ctx.lineTo(x2 - 0.3, y2 - 0.3);
+        }
+        ctx.stroke();
+      }
+
+      // 3. Render Needle Penetration Points
+      if (state.showNeedles) {
+        const r = Math.max(1.1, 0.14 * state.zoomPxPerMm);
+        ctx.fillStyle = "#111";
+        ctx.beginPath();
+        for (let i = 0; i < count; i++) {
+          const [nx, ny] = mmToScreen(pts[i].x, pts[i].y);
+          ctx.moveTo(nx + r, ny);
+          ctx.arc(nx, ny, r, 0, Math.PI * 2);
+        }
+        ctx.fill();
+      }
+
+      // 4. Current Needle Crosshair Indicator
+      const lastPt = pts[count - 1];
+      const [lx, ly] = mmToScreen(lastPt.x, lastPt.y);
+      ctx.strokeStyle = "#ff2a2a";
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.arc(lx, ly, 5, 0, Math.PI * 2);
+      ctx.stroke();
+
+      document.getElementById("playerCounter").textContent = `${count} / ${pts.length}`;
+      document.getElementById("zoomReadout").textContent = `${Math.round((state.zoomPxPerMm / 4.2) * 100)}%`;
+    }
+
+    // =========================================================================
+    // 5. Design Telemetry & Tajima .DST Binary Exporter
+    // =========================================================================
+    function updateTelemetry() {
+      const pts = state.stitches;
+      let jumps = 0;
+      let totalMm = 0;
+      let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+
+      for (let i = 0; i < pts.length; i++) {
+        const p = pts[i];
+        if (p.x < minX) minX = p.x;
+        if (p.x > maxX) maxX = p.x;
+        if (p.y < minY) minY = p.y;
+        if (p.y > maxY) maxY = p.y;
+        if (i > 0) {
+          const d = Math.hypot(p.x - pts[i - 1].x, p.y - pts[i - 1].y);
+          totalMm += d;
+          if (p.jump) jumps++;
+        }
+      }
+
+      const widthMm = pts.length ? (maxX - minX) : 0;
+      const heightMm = pts.length ? (maxY - minY) : 0;
+      const totalSec = Math.round((pts.length / 750) * 60);
+      const mins = Math.floor(totalSec / 60);
+      const secs = totalSec % 60;
+
+      document.getElementById("statStitches").textContent = pts.length.toLocaleString();
+      document.getElementById("statJumps").textContent = jumps.toLocaleString();
+      document.getElementById("statThread").textContent = `${(totalMm / 1000).toFixed(2)} m`;
+      document.getElementById("statWidth").textContent = `${widthMm.toFixed(1)} mm`;
+      document.getElementById("statHeight").textContent = `${heightMm.toFixed(1)} mm`;
+      document.getElementById("statTime").textContent = `${mins}m ${String(secs).padStart(2, "0")}s`;
+    }
+
+    function encodeDstRecord(dx, dy, jump) {
+      let b0 = 0, b1 = 0, b2 = 0b00000011;
+      if (jump) b2 |= 0b10000000;
+
+      if (dx >= 41) { b2 |= 0b00000100; dx -= 81; }
+      if (dx <= -41) { b2 |= 0b00001000; dx += 81; }
+      if (dx >= 14) { b1 |= 0b00000100; dx -= 27; }
+      if (dx <= -14) { b1 |= 0b00001000; dx += 27; }
+      if (dx >= 5) { b0 |= 0b00000100; dx -= 9; }
+      if (dx <= -5) { b0 |= 0b00001000; dx += 9; }
+      if (dx >= 2) { b1 |= 0b00000001; dx -= 3; }
+      if (dx <= -2) { b1 |= 0b00000010; dx += 3; }
+      if (dx >= 1) { b0 |= 0b00000001; dx -= 1; }
+      if (dx <= -1) { b0 |= 0b00000010; dx += 1; }
+
+      if (dy >= 41) { b2 |= 0b00100000; dy -= 81; }
+      if (dy <= -41) { b2 |= 0b00010000; dy += 81; }
+      if (dy >= 14) { b1 |= 0b00100000; dy -= 27; }
+      if (dy <= -14) { b1 |= 0b00010000; dy += 27; }
+      if (dy >= 5) { b0 |= 0b00100000; dy -= 9; }
+      if (dy <= -5) { b0 |= 0b00010000; dy += 9; }
+      if (dy >= 2) { b1 |= 0b10000000; dy -= 3; }
+      if (dy <= -2) { b1 |= 0b01000000; dy += 3; }
+      if (dy >= 1) { b0 |= 0b10000000; dy -= 1; }
+      if (dy <= -1) { b0 |= 0b01000000; dy += 1; }
+
+      return [b0, b1, b2];
+    }
+
+    function exportTajimaDst() {
+      const pts = state.stitches;
+      if (!pts.length) return;
+
+      const header = new Uint8Array(512);
+      header.fill(0x20);
+      const headerStr =
+        `LA:HATCH_CLONE     \r` +
+        `ST:${String(pts.length).padStart(7, " ")}\r` +
+        `CO:  1\r+X:    500\r-X:    500\r+Y:    500\r-Y:    500\rAX:+    0\rAY:+    0\r`;
+      for (let i = 0; i < headerStr.length; i++) header[i] = headerStr.charCodeAt(i);
+      header[511] = 0x1a;
+
+      const body = [];
+      let prevX = 0, prevY = 0;
+      for (const p of pts) {
+        const currX = Math.round(p.x * 10);
+        const currY = Math.round(-p.y * 10); // Invert Y for standard machine orientation
+        let dx = currX - prevX;
+        let dy = currY - prevY;
+        while (Math.abs(dx) > 121 || Math.abs(dy) > 121) {
+          const sx = Math.max(-121, Math.min(121, dx));
+          const sy = Math.max(-121, Math.min(121, dy));
+          body.push(...encodeDstRecord(sx, sy, true));
+          dx -= sx;
+          dy -= sy;
+        }
+        body.push(...encodeDstRecord(dx, dy, Boolean(p.jump)));
+        prevX = currX;
+        prevY = currY;
+      }
+      body.push(0x00, 0x00, 0xf3);
+
+      const out = new Uint8Array(512 + body.length);
+      out.set(header, 0);
+      out.set(body, 512);
+
+      const blob = new Blob([out], { type: "application/octet-stream" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `digitized_${state.shapePreset}_${state.stitchMode}.dst`;
+      a.click();
+      URL.revokeObjectURL(url);
+    }
+
+    // =========================================================================
+    // 6. Viewport Pan / Zoom, Bitmap Upload, Stitch Player & UI Bindings
+    // =========================================================================
+    let isDragging = false;
+    let dragStartX = 0, dragStartY = 0;
+
+    canvas.addEventListener("mousedown", (e) => {
+      isDragging = true;
+      dragStartX = e.clientX - state.panX;
+      dragStartY = e.clientY - state.panY;
+    });
+
+    window.addEventListener("mousemove", (e) => {
+      const rect = canvas.getBoundingClientRect();
+      const sx = e.clientX - rect.left;
+      const sy = e.clientY - rect.top;
+      if (sx >= 0 && sy >= 0 && sx <= rect.width && sy <= rect.height) {
+        const [mx, my] = screenToMm(sx, sy);
+        document.getElementById("coordReadout").textContent =
+          `X: ${mx.toFixed(1)} mm, Y: ${(-my).toFixed(1)} mm`;
+      }
+      if (!isDragging) return;
+      state.panX = e.clientX - dragStartX;
+      state.panY = e.clientY - dragStartY;
+      renderViewport();
+    });
+
+    window.addEventListener("mouseup", () => { isDragging = false; });
+
+    canvas.addEventListener("wheel", (e) => {
+      e.preventDefault();
+      const rect = canvas.getBoundingClientRect();
+      const sx = e.clientX - rect.left;
+      const sy = e.clientY - rect.top;
+      const [beforeMmX, beforeMmY] = screenToMm(sx, sy);
+
+      const factor = e.deltaY < 0 ? 1.14 : 1 / 1.14;
+      state.zoomPxPerMm = Math.max(1.0, Math.min(45.0, state.zoomPxPerMm * factor));
+
+      const [afterScreenX, afterScreenY] = mmToScreen(beforeMmX, beforeMmY);
+      state.panX += sx - afterScreenX;
+      state.panY += sy - afterScreenY;
+      renderViewport();
+    }, { passive: false });
+
+    // Populate Madeira Thread Swatches
+    const paletteEl = document.getElementById("threadPalette");
+    MADEIRA_THREADS.forEach((t, idx) => {
+      const sw = document.createElement("div");
+      sw.className = "swatch" + (idx === 0 ? " selected" : "");
+      sw.style.backgroundColor = t.hex;
+      sw.title = `Madeira #${t.code} — ${t.name}`;
+      sw.addEventListener("click", () => {
+        document.querySelectorAll(".swatch").forEach(el => el.classList.remove("selected"));
+        sw.classList.add("selected");
+        state.threadColor = t.hex;
+        renderViewport();
+      });
+      paletteEl.appendChild(sw);
+    });
+
+    // Control Bindings
+    document.getElementById("shapePreset").addEventListener("change", (e) => {
+      state.shapePreset = e.target.value;
+      regenerateDesign();
+    });
+
+    document.getElementById("stitchMode").addEventListener("change", (e) => {
+      state.stitchMode = e.target.value;
+      regenerateDesign();
+    });
+
+    document.getElementById("inpStitchLen").addEventListener("input", (e) => {
+      state.stitchLengthMm = parseFloat(e.target.value);
+      document.getElementById("valStitchLen").textContent = `${state.stitchLengthMm.toFixed(1)} mm`;
+      regenerateDesign();
+    });
+
+    document.getElementById("inpRowSpacing").addEventListener("input", (e) => {
+      state.rowSpacingMm = parseFloat(e.target.value);
+      document.getElementById("valRowSpacing").textContent = `${state.rowSpacingMm.toFixed(2)} mm`;
+      regenerateDesign();
+    });
+
+    document.getElementById("inpAngle").addEventListener("input", (e) => {
+      state.angleDeg = parseFloat(e.target.value);
+      document.getElementById("valAngle").textContent = `${state.angleDeg}°`;
+      regenerateDesign();
+    });
+
+    document.getElementById("inpThreshold").addEventListener("input", (e) => {
+      state.threshold = parseInt(e.target.value, 10);
+      document.getElementById("valThreshold").textContent = String(state.threshold);
+      if (state.shapePreset === "image") regenerateDesign();
+    });
+
+    document.getElementById("hoopSize").addEventListener("change", (e) => {
+      state.hoopSizeMm = parseInt(e.target.value, 10);
+      renderViewport();
+    });
+
+    // Top Toolbar Toggles
+    document.getElementById("btnTrueView").addEventListener("click", (e) => {
+      state.trueView = !state.trueView;
+      e.currentTarget.classList.toggle("active", state.trueView);
+      renderViewport();
+    });
+
+    document.getElementById("btnNeedlePts").addEventListener("click", (e) => {
+      state.showNeedles = !state.showNeedles;
+      e.currentTarget.classList.toggle("active", state.showNeedles);
+      renderViewport();
+    });
+
+    document.getElementById("btnGrid").addEventListener("click", (e) => {
+      state.showGrid = !state.showGrid;
+      e.currentTarget.classList.toggle("active", state.showGrid);
+      renderViewport();
+    });
+
+    document.getElementById("btnFitView").addEventListener("click", () => {
+      state.panX = 0;
+      state.panY = 0;
+      state.zoomPxPerMm = 4.2;
+      renderViewport();
+    });
+
+    document.getElementById("btnExportDst").addEventListener("click", exportTajimaDst);
+
+    // Bitmap Upload Processing
+    document.getElementById("imageInput").addEventListener("change", (e) => {
+      const file = e.target.files && e.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = (ev) => {
+        const img = new Image();
+        img.onload = () => {
+          const w = 140, h = 140;
+          const off = document.createElement("canvas");
+          off.width = w; off.height = h;
+          const octx = off.getContext("2d");
+          octx.fillStyle = "#ffffff";
+          octx.fillRect(0, 0, w, h);
+          const scale = Math.min(w / img.width, h / img.height) * 0.88;
+          const dw = img.width * scale, dh = img.height * scale;
+          octx.drawImage(img, (w - dw) / 2, (h - dh) / 2, dw, dh);
+
+          const imgData = octx.getImageData(0, 0, w, h).data;
+          const gray = new Uint8Array(w * h);
+          for (let i = 0; i < w * h; i++) {
+            const r = imgData[i * 4], g = imgData[i * 4 + 1], b = imgData[i * 4 + 2];
+            gray[i] = Math.round(0.299 * r + 0.587 * g + 0.114 * b);
+          }
+          state.bitmapMask = { width: w, height: h, gray };
+          const box = document.getElementById("imagePreviewBox");
+          box.innerHTML = "";
+          box.appendChild(off);
+
+          document.getElementById("shapePreset").value = "image";
+          state.shapePreset = "image";
+          regenerateDesign();
+        };
+        img.src = ev.target.result;
+      };
+      reader.readAsDataURL(file);
+    });
+
+    // Stitch Player Controls
+    const scrubber = document.getElementById("stitchScrubber");
+    const btnPlayPause = document.getElementById("btnPlayPause");
+
+    scrubber.addEventListener("input", (e) => {
+      state.visibleCount = parseInt(e.target.value, 10);
+      renderViewport();
+    });
+
+    document.getElementById("btnStepBack").addEventListener("click", () => {
+      state.isPlaying = false;
+      btnPlayPause.innerHTML = "&#9654; Play";
+      state.visibleCount = Math.max(2, state.visibleCount - 1);
+      scrubber.value = state.visibleCount;
+      renderViewport();
+    });
+
+    document.getElementById("btnStepFwd").addEventListener("click", () => {
+      state.isPlaying = false;
+      btnPlayPause.innerHTML = "&#9654; Play";
+      state.visibleCount = Math.min(state.stitches.length, state.visibleCount + 1);
+      scrubber.value = state.visibleCount;
+      renderViewport();
+    });
+
+    btnPlayPause.addEventListener("click", () => {
+      state.isPlaying = !state.isPlaying;
+      if (state.isPlaying && state.visibleCount >= state.stitches.length) {
+        state.visibleCount = 2;
+      }
+      btnPlayPause.innerHTML = state.isPlaying ? "&#10074;&#10074; Pause" : "&#9654; Play";
+    });
+
+    function animationLoop() {
+      if (state.isPlaying) {
+        const speed = parseInt(document.getElementById("playSpeed").value, 10) || 10;
+        state.visibleCount = Math.min(state.stitches.length, state.visibleCount + speed);
+        scrubber.value = state.visibleCount;
+        renderViewport();
+        if (state.visibleCount >= state.stitches.length) {
+          state.isPlaying = false;
+          btnPlayPause.innerHTML = "&#9654; Play";
+        }
+      }
+      requestAnimationFrame(animationLoop);
+    }
+
+    window.addEventListener("resize", resizeCanvas);
+    resizeCanvas();
+    regenerateDesign();
+    requestAnimationFrame(animationLoop);
+  </script>
+</body>
+</html>
