@@ -234,6 +234,24 @@
           </div>
           <input type="range" id="inpThreshold" min="20" max="245" step="1" value="165" />
         </div>
+        <div class="control-group">
+          <div class="control-label">
+            <span>Trace Outline Calibration</span>
+            <span class="control-value" id="valContourTol">1.5 px</span>
+          </div>
+          <input type="range" id="inpContourTol" min="0.0" max="5.0" step="0.1" value="1.5" title="Calibrate outline tracing: lower values trace crisp/sharp corners faithfully; higher values smooth and simplify jagged pixel edges." />
+        </div>
+        <div class="control-group">
+          <div class="control-label">
+            <span>Outline Offset (Expand/Shrink)</span>
+            <span class="control-value" id="valTraceOffset">0.0 mm</span>
+          </div>
+          <input type="range" id="inpTraceOffset" min="-1.5" max="1.5" step="0.1" value="0.0" title="Calibrate outline registration: expand (+) or shrink (-) traced contours to match the reference underlay." />
+        </div>
+        <div class="control-group" style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
+          <label for="chkShowTraceOutline" style="font-size:12px;cursor:pointer;" title="Overlay the calibrated vector trace boundary in cyan over the reference underlay">Show Calibrated Trace Outline</label>
+          <input type="checkbox" id="chkShowTraceOutline" checked style="cursor:pointer;" />
+        </div>
         <div class="control-group" style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
           <label for="chkContourLock" style="font-size:12px;cursor:pointer;">Crisp Contour Outline Lock</label>
           <input type="checkbox" id="chkContourLock" checked style="cursor:pointer;" />
@@ -295,6 +313,20 @@
             <option value="100">100 × 100 mm (4" × 4")</option>
             <option value="150" selected>150 × 150 mm (6" × 6" Optimal)</option>
             <option value="200">200 × 200 mm (8" × 8" Large)</option>
+          </select>
+        </div>
+        <div class="control-group">
+          <div class="control-label">
+            <span>Stitch Grid Scale Size</span>
+            <span class="control-value" id="valGridScale">10 mm</span>
+          </div>
+          <select id="gridScaleSize" title="Set the physical millimeter spacing of the viewport stitch grid">
+            <option value="1">1.0 mm (Fine Micro-Grid)</option>
+            <option value="2">2.0 mm (Stitch Density Grid)</option>
+            <option value="5">5.0 mm (0.5 cm Half-Grid)</option>
+            <option value="10" selected>10.0 mm (1 cm Standard Grid)</option>
+            <option value="20">20.0 mm (2 cm Coarse Grid)</option>
+            <option value="25.4">25.4 mm (1.0 Inch Imperial Grid)</option>
           </select>
         </div>
       </div>
@@ -431,6 +463,10 @@
       rowSpacingMm: 0.60,
       angleDeg: 30,
       threshold: 165,
+      contourTolerance: 1.5,
+      traceOffsetMm: 0.0,
+      showTraceOutline: true,
+      gridSizeMm: 10.0,
       jumpThresholdMm: 5.5,
       hoopSizeMm: 150,
       threadColor: MADEIRA_THREADS[0].hex,
@@ -536,6 +572,99 @@
       return pointInPolygon(xMm, yMm, poly);
     }
 
+    // Ramer-Douglas-Peucker (RDP) polyline simplification for Trace Outline Calibration
+    function rdpSimplifyOpenMm(pts, epsMm) {
+      if (pts.length <= 2 || epsMm <= 0.02) return pts;
+      let maxDist = 0;
+      let maxIdx = 0;
+      const [x0, y0] = pts[0];
+      const [x1, y1] = pts[pts.length - 1];
+      const dx = x1 - x0;
+      const dy = y1 - y0;
+      const lenSq = dx * dx + dy * dy;
+
+      for (let i = 1; i < pts.length - 1; i++) {
+        const [px, py] = pts[i];
+        let d = 0;
+        if (lenSq < 1e-8) {
+          d = Math.hypot(px - x0, py - y0);
+        } else {
+          const t = Math.max(0, Math.min(1, ((px - x0) * dx + (py - y0) * dy) / lenSq));
+          d = Math.hypot(px - (x0 + t * dx), py - (y0 + t * dy));
+        }
+        if (d > maxDist) {
+          maxDist = d;
+          maxIdx = i;
+        }
+      }
+
+      if (maxDist > epsMm) {
+        const left = rdpSimplifyOpenMm(pts.slice(0, maxIdx + 1), epsMm);
+        const right = rdpSimplifyOpenMm(pts.slice(maxIdx), epsMm);
+        return left.slice(0, -1).concat(right);
+      }
+      return [pts[0], pts[pts.length - 1]];
+    }
+
+    function calibrateContourLoopMm(rawPts, tolPx, offsetMm, pxScaleMm) {
+      if (!rawPts || rawPts.length < 4) return rawPts;
+      let pts = rawPts;
+
+      // 1. Adaptive Laplacian smoothing passes controlled by Trace Outline Calibration (tolPx)
+      const smoothPasses = Math.min(5, Math.max(0, Math.round(tolPx)));
+      const alpha = Math.min(0.35, 0.14 * tolPx);
+      for (let pass = 0; pass < smoothPasses; pass++) {
+        const nextPts = [];
+        for (let i = 0; i < pts.length; i++) {
+          const prev = pts[(i - 1 + pts.length) % pts.length];
+          const curr = pts[i];
+          const nxt = pts[(i + 1) % pts.length];
+          nextPts.push([
+            alpha * prev[0] + (1 - 2 * alpha) * curr[0] + alpha * nxt[0],
+            alpha * prev[1] + (1 - 2 * alpha) * curr[1] + alpha * nxt[1],
+          ]);
+        }
+        pts = nextPts;
+      }
+
+      // 2. Closed-loop RDP simplification (removes staircase pixel jitter while preserving corners)
+      const epsMm = Math.max(0, (tolPx - 0.4) * pxScaleMm * 0.65);
+      if (epsMm > 0.04 && pts.length >= 8) {
+        const mid = Math.floor(pts.length / 2);
+        const half1 = rdpSimplifyOpenMm(pts.slice(0, mid + 1), epsMm);
+        const half2 = rdpSimplifyOpenMm(pts.slice(mid).concat([pts[0]]), epsMm);
+        const merged = half1.slice(0, -1).concat(half2.slice(0, -1));
+        if (merged.length >= 4) pts = merged;
+      }
+
+      // 3. Outline Offset Calibration (expand or shrink along outward vertex normals)
+      if (Math.abs(offsetMm) > 0.01 && pts.length >= 4) {
+        // Compute signed area to orient outward normal consistently
+        let signedArea2 = 0;
+        for (let i = 0; i < pts.length; i++) {
+          const p0 = pts[i];
+          const p1 = pts[(i + 1) % pts.length];
+          signedArea2 += p0[0] * p1[1] - p1[0] * p0[1];
+        }
+        const sign = signedArea2 >= 0 ? 1 : -1;
+        const offsetPts = [];
+        for (let i = 0; i < pts.length; i++) {
+          const prev = pts[(i - 1 + pts.length) % pts.length];
+          const curr = pts[i];
+          const nxt = pts[(i + 1) % pts.length];
+          const tx = nxt[0] - prev[0];
+          const ty = nxt[1] - prev[1];
+          const len = Math.hypot(tx, ty) || 1;
+          const nx = (ty / len) * sign;
+          const ny = (-tx / len) * sign;
+          offsetPts.push([curr[0] + nx * offsetMm, curr[1] + ny * offsetMm]);
+        }
+        pts = offsetPts;
+      }
+
+      return pts;
+    }
+
     function traceComponentContoursMm(labels, width, height, compId, minX, maxX, minY, maxY, pxToMmX, pxToMmY) {
       const nextMap = new Map();
       const keyOf = (vx, vy) => (vy << 16) | vx;
@@ -592,21 +721,16 @@
           }
 
           if (pts.length >= 6) {
-            let smoothed = pts;
-            for (let pass = 0; pass < 2; pass++) {
-              const nextPts = [];
-              for (let i = 0; i < smoothed.length; i++) {
-                const prev = smoothed[(i - 1 + smoothed.length) % smoothed.length];
-                const curr = smoothed[i];
-                const nxt = smoothed[(i + 1) % smoothed.length];
-                nextPts.push([
-                  0.25 * prev[0] + 0.5 * curr[0] + 0.25 * nxt[0],
-                  0.25 * prev[1] + 0.5 * curr[1] + 0.25 * nxt[1],
-                ]);
-              }
-              smoothed = nextPts;
+            const pxScaleMm = 110 / width;
+            const calibrated = calibrateContourLoopMm(
+              pts,
+              state.contourTolerance,
+              state.traceOffsetMm,
+              pxScaleMm
+            );
+            if (calibrated && calibrated.length >= 4) {
+              loops.push(calibrated);
             }
-            loops.push(smoothed);
           }
         }
       }
@@ -1500,11 +1624,15 @@
       if (
         mask.cachedThreshold !== state.threshold ||
         mask.cachedAutoColor !== state.autoColor ||
+        mask.cachedContourTol !== state.contourTolerance ||
+        mask.cachedTraceOffset !== state.traceOffsetMm ||
         !mask.extracted
       ) {
         mask.extracted = extractBitmapComponents(mask, state.threshold);
         mask.cachedThreshold = state.threshold;
         mask.cachedAutoColor = state.autoColor;
+        mask.cachedContourTol = state.contourTolerance;
+        mask.cachedTraceOffset = state.traceOffsetMm;
       }
       return mask.extracted.components;
     }
@@ -1908,7 +2036,7 @@
       ctx.fillStyle = "#f0f0f0";
       ctx.fillRect(0, 0, w, h);
 
-      // Draw 10mm physical grid & hoop boundary
+      // Draw physical grid (configurable Stitch Grid Scale Size in mm) & hoop boundary
       if (state.showGrid) {
         const halfHoop = state.hoopSizeMm * 0.5;
         const [hx0, hy0] = mmToScreen(-halfHoop, -halfHoop);
@@ -1917,16 +2045,23 @@
         ctx.fillStyle = "#f9f9fb";
         ctx.fillRect(hx0, hy0, hx1 - hx0, hy1 - hy0);
 
-        ctx.strokeStyle = "rgba(0,0,0,0.06)";
+        const gridStep = Math.max(0.5, state.gridSizeMm || 10.0);
+        // Prevent sub-pixel visual moiré when zoomed far out on a 1mm micro-grid
+        const stepPx = gridStep * state.zoomPxPerMm;
+        const effectiveStep = stepPx < 4.0 ? gridStep * Math.ceil(4.0 / stepPx) : gridStep;
+
+        ctx.strokeStyle = "rgba(0,0,0,0.065)";
         ctx.lineWidth = 1;
         ctx.beginPath();
-        for (let m = -halfHoop; m <= halfHoop; m += 10) {
-          const [gx] = mmToScreen(m, 0);
-          const [, gy] = mmToScreen(0, m);
-          ctx.moveTo(gx, hy0);
-          ctx.lineTo(gx, hy1);
-          ctx.moveTo(hx0, gy);
-          ctx.lineTo(hx1, gy);
+        for (let m = 0; m <= halfHoop + 1e-4; m += effectiveStep) {
+          const [gxPos] = mmToScreen(m, 0);
+          const [gxNeg] = mmToScreen(-m, 0);
+          const [, gyPos] = mmToScreen(0, m);
+          const [, gyNeg] = mmToScreen(0, -m);
+          ctx.moveTo(gxPos, hy0); ctx.lineTo(gxPos, hy1);
+          if (m > 0) { ctx.moveTo(gxNeg, hy0); ctx.lineTo(gxNeg, hy1); }
+          ctx.moveTo(hx0, gyPos); ctx.lineTo(hx1, gyPos);
+          if (m > 0) { ctx.moveTo(hx0, gyNeg); ctx.lineTo(hx1, gyNeg); }
         }
         ctx.stroke();
 
@@ -1972,6 +2107,32 @@
           }
         }
         ctx.restore();
+      }
+
+      // 0b. Render Calibrated Trace Outline Overlay (cyan dashed boundary for calibrating threshold, tolerance & offset)
+      if (state.showTraceOutline && (state.shapePreset === "image" || state.shapePreset === "barbed_wire")) {
+        const comps = getActiveBitmapComponents();
+        if (comps && comps.length) {
+          ctx.save();
+          ctx.strokeStyle = "rgba(0, 210, 255, 0.88)";
+          ctx.lineWidth = 1.35;
+          ctx.setLineDash([4, 3]);
+          ctx.beginPath();
+          for (const comp of comps) {
+            if (!comp.contoursMm) continue;
+            for (const loop of comp.contoursMm) {
+              if (!loop || loop.length < 3) continue;
+              for (let i = 0; i < loop.length; i++) {
+                const [sx, sy] = mmToScreen(loop[i][0], loop[i][1]);
+                if (i === 0) ctx.moveTo(sx, sy);
+                else ctx.lineTo(sx, sy);
+              }
+              ctx.closePath();
+            }
+          }
+          ctx.stroke();
+          ctx.restore();
+        }
       }
 
       const pts = state.stitches;
@@ -2751,6 +2912,32 @@
       state.threshold = parseInt(e.target.value, 10);
       document.getElementById("valThreshold").textContent = String(state.threshold);
       if (state.shapePreset === "image" || state.shapePreset === "barbed_wire") regenerateDesign();
+    });
+
+    document.getElementById("inpContourTol").addEventListener("input", (e) => {
+      state.contourTolerance = parseFloat(e.target.value);
+      document.getElementById("valContourTol").textContent = `${state.contourTolerance.toFixed(1)} px`;
+      if (state.shapePreset === "image" || state.shapePreset === "barbed_wire") regenerateDesign();
+      else renderViewport();
+    });
+
+    document.getElementById("inpTraceOffset").addEventListener("input", (e) => {
+      state.traceOffsetMm = parseFloat(e.target.value);
+      const sign = state.traceOffsetMm > 0 ? "+" : "";
+      document.getElementById("valTraceOffset").textContent = `${sign}${state.traceOffsetMm.toFixed(1)} mm`;
+      if (state.shapePreset === "image" || state.shapePreset === "barbed_wire") regenerateDesign();
+      else renderViewport();
+    });
+
+    document.getElementById("chkShowTraceOutline").addEventListener("change", (e) => {
+      state.showTraceOutline = e.target.checked;
+      renderViewport();
+    });
+
+    document.getElementById("gridScaleSize").addEventListener("change", (e) => {
+      state.gridSizeMm = parseFloat(e.target.value) || 10.0;
+      document.getElementById("valGridScale").textContent = `${state.gridSizeMm} mm`;
+      renderViewport();
     });
 
     document.getElementById("chkContourLock").addEventListener("change", (e) => {
