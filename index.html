@@ -719,9 +719,38 @@
       return null;
     }
 
+    // Classify a pixel into clean semantic color groups so anti-aliased border halos never fragment into purple/blue threads
+    function classifyPixelColorGroup(rVal, gVal, bVal) {
+      const maxCh = Math.max(rVal, gVal, bVal);
+      const minCh = Math.min(rVal, gVal, bVal);
+      const chroma = maxCh - minCh;
+      const luma = 0.299 * rVal + 0.587 * gVal + 0.114 * bVal;
+
+      // Low-saturation / neutral charcoal / gray / black ink (outlines, dark lettering)
+      if (chroma < 38 || luma < 78) {
+        return "#212529"; // Jet Black
+      }
+      // Warm red / crimson / orange family
+      if (rVal >= gVal && rVal - bVal > 32) {
+        if (gVal - bVal > 45 && rVal > 165) return "#e67e22"; // Burnt Orange / Gold
+        return "#e62e2d"; // Christmas Red
+      }
+      // Cool blue / cyan family (require genuine blue dominance over red, not dark gray halo)
+      if (bVal - rVal > 35 && bVal > gVal - 20) {
+        return "#1e90ff"; // Royal Blue
+      }
+      // Green family
+      if (gVal - Math.max(rVal, bVal) > 30) {
+        return "#19a974"; // Emerald Green
+      }
+      return matchRgbToMadeiraHex(rVal, gVal, bVal);
+    }
+
     function matchRgbToMadeiraHex(rVal, gVal, bVal) {
-      if (rVal < 78 && gVal < 78 && bVal < 85) return "#212529";
-      if (rVal - Math.max(gVal, bVal) > 40) return "#e62e2d";
+      const maxCh = Math.max(rVal, gVal, bVal);
+      const minCh = Math.min(rVal, gVal, bVal);
+      if (maxCh - minCh < 38 || (rVal < 95 && gVal < 95 && bVal < 100)) return "#212529";
+      if (rVal - Math.max(gVal, bVal) > 32) return "#e62e2d";
       let bestHex = MADEIRA_THREADS[0].hex;
       let bestDist = Infinity;
       for (const th of MADEIRA_THREADS) {
@@ -940,7 +969,7 @@
           bin[idx] = isFg;
           if (isFg) {
             if (state.autoColor && r && g && b) {
-              pixelColorHex[idx] = matchRgbToMadeiraHex(r[idx], g[idx], b[idx]);
+              pixelColorHex[idx] = classifyPixelColorGroup(r[idx], g[idx], b[idx]);
             } else {
               pixelColorHex[idx] = state.threadColor;
             }
@@ -948,10 +977,38 @@
         }
       }
 
+      // Erode 1-pixel anti-aliased border halos: if a border pixel's color differs from the interior majority in its 5x5 neighborhood, snap it to the interior color
+      if (state.autoColor && r && g && b) {
+        const cleanedColors = pixelColorHex.slice();
+        for (let y = 2; y < height - 2; y++) {
+          for (let x = 2; x < width - 2; x++) {
+            const idx = y * width + x;
+            if (!bin[idx]) continue;
+            const touchesBg = !bin[idx - 1] || !bin[idx + 1] || !bin[idx - width] || !bin[idx + width];
+            if (!touchesBg) continue;
+            // Find deepest interior neighbor (pixel in 5x5 window that does NOT touch background)
+            let bestInteriorColor = null;
+            for (let dy = -2; dy <= 2 && !bestInteriorColor; dy++) {
+              for (let dx = -2; dx <= 2; dx++) {
+                const nIdx = (y + dy) * width + (x + dx);
+                if (!bin[nIdx]) continue;
+                const nInterior = bin[nIdx - 1] && bin[nIdx + 1] && bin[nIdx - width] && bin[nIdx + width];
+                if (nInterior) {
+                  bestInteriorColor = pixelColorHex[nIdx];
+                  break;
+                }
+              }
+            }
+            if (bestInteriorColor) cleanedColors[idx] = bestInteriorColor;
+          }
+        }
+        for (let i = 0; i < width * height; i++) pixelColorHex[i] = cleanedColors[i];
+      }
+
       const labels = new Int32Array(width * height);
       const components = [];
       let currentLabel = 0;
-      const minPixels = Math.max(10, Math.round(width * height * 0.00008));
+      const minPixels = Math.max(14, Math.round(width * height * 0.00012));
       const queue = new Int32Array(width * height);
       const compMaskScratch = new Uint8Array(width * height);
 
@@ -961,12 +1018,13 @@
           if (!bin[startIdx] || labels[startIdx] !== 0) continue;
 
           currentLabel++;
-          const targetColorHex = pixelColorHex[startIdx];
+          const seedColorHex = pixelColorHex[startIdx];
           let qHead = 0, qTail = 0;
           queue[qTail++] = startIdx;
           labels[startIdx] = currentLabel;
 
           let minX = x, maxX = x, minY = y, maxY = y;
+          let sumR = 0, sumG = 0, sumB = 0, coreCount = 0;
           const pixels = [];
 
           while (qHead < qTail) {
@@ -980,6 +1038,15 @@
             if (cy < minY) minY = cy;
             if (cy > maxY) maxY = cy;
 
+            if (r && g && b) {
+              const isInterior = bin[curr - 1] && bin[curr + 1] && bin[curr - width] && bin[curr + width];
+              const weight = isInterior ? 4 : 1;
+              sumR += r[curr] * weight;
+              sumG += g[curr] * weight;
+              sumB += b[curr] * weight;
+              coreCount += weight;
+            }
+
             for (let dy = -1; dy <= 1; dy++) {
               const ny = cy + dy;
               if (ny <= 0 || ny >= height - 1) continue;
@@ -987,7 +1054,7 @@
                 const nx = cx + dx;
                 if (nx <= 0 || nx >= width - 1) continue;
                 const nIdx = ny * width + nx;
-                if (bin[nIdx] && labels[nIdx] === 0 && pixelColorHex[nIdx] === targetColorHex) {
+                if (bin[nIdx] && labels[nIdx] === 0 && pixelColorHex[nIdx] === seedColorHex) {
                   labels[nIdx] = currentLabel;
                   queue[qTail++] = nIdx;
                 }
@@ -1000,6 +1067,11 @@
             continue;
           }
 
+          let targetColorHex = seedColorHex;
+          if (state.autoColor && r && g && b && coreCount > 0) {
+            targetColorHex = classifyPixelColorGroup(sumR / coreCount, sumG / coreCount, sumB / coreCount);
+          }
+
           const compId = currentLabel;
           for (let i = 0; i < pixels.length; i++) compMaskScratch[pixels[i]] = 1;
 
@@ -1008,10 +1080,14 @@
           );
           const maxStrokeWidthMm = maxRadiusPx * 2.0 * pxScaleMm;
           const bboxSpanMm = Math.hypot((maxX - minX) * pxScaleMm, (maxY - minY) * pxScaleMm);
-          const isThinStroke = maxRadiusPx <= 8.5 || (bboxSpanMm / Math.max(0.6, maxStrokeWidthMm) >= 3.2 && maxRadiusPx <= 13.5);
-          const skeletonChainsMm = extractMedialSkeletonChainsMm(
-            compMaskScratch, distField, width, height, minX, maxX, minY, maxY, pxToMmX, pxToMmY, pxScaleMm
-          );
+          // Only classify genuinely narrow line-art strokes (<= 4.5 px radius / ~2.7 mm width) as single-spine satin columns;
+          // wider block letters (like R, E, D, C, O) and solid emblems use clean Tatami Fill + Contour Lock
+          const isThinStroke = maxRadiusPx <= 4.5 || (bboxSpanMm / Math.max(0.6, maxStrokeWidthMm) >= 4.2 && maxRadiusPx <= 7.0);
+          const skeletonChainsMm = isThinStroke
+            ? extractMedialSkeletonChainsMm(
+                compMaskScratch, distField, width, height, minX, maxX, minY, maxY, pxToMmX, pxToMmY, pxScaleMm
+              )
+            : [];
 
           for (let i = 0; i < pixels.length; i++) compMaskScratch[pixels[i]] = 0;
 
@@ -1194,16 +1270,32 @@
           const prev = result[result.length - 1];
           const next = b[0];
           const gap = Math.hypot(next.x - prev.x, next.y - prev.y);
-          // Subdivide intra-object branch transitions (<= 16 mm) into 2.4 mm underpath travel stitches
-          // so the needle walks inside the letter instead of triggering a visible red jump stitch
-          if (gap > 2.8 && gap <= 16.0) {
-            const steps = Math.ceil(gap / 2.4);
-            for (let s = 1; s < steps; s++) {
-              const t = s / steps;
-              const mx = prev.x + (next.x - prev.x) * t;
-              const my = prev.y + (next.y - prev.y) * t;
-              result.push({ x: mx, y: my, color: colorHex, underpath: true });
+          // Only walk via underpath if every intermediate point stays strictly inside insideFn (never bridge across letter holes or blank background!)
+          if (gap > 2.2 && gap <= 12.0) {
+            let staysInside = true;
+            const checks = Math.max(3, Math.ceil(gap / 0.7));
+            for (let c = 1; c < checks; c++) {
+              const t = c / checks;
+              if (!insideFn(prev.x + (next.x - prev.x) * t, prev.y + (next.y - prev.y) * t)) {
+                staysInside = false;
+                break;
+              }
             }
+            if (staysInside) {
+              const steps = Math.ceil(gap / 2.2);
+              for (let s = 1; s < steps; s++) {
+                const t = s / steps;
+                const mx = prev.x + (next.x - prev.x) * t;
+                const my = prev.y + (next.y - prev.y) * t;
+                result.push({ x: mx, y: my, color: colorHex, underpath: true });
+              }
+            } else {
+              b[0].jump = true;
+              b[0].trim = true;
+            }
+          } else if (gap > 12.0) {
+            b[0].jump = true;
+            b[0].trim = true;
           }
         }
         result.push(...b);
