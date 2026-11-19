@@ -239,9 +239,9 @@
         <div class="control-group">
           <div class="control-label">
             <span>Trace Outline Calibration</span>
-            <span class="control-value" id="valContourTol">1.5 px</span>
+            <span class="control-value" id="valContourTol">0.4 px</span>
           </div>
-          <input type="range" id="inpContourTol" min="0.0" max="5.0" step="0.1" value="1.5" title="Calibrate outline tracing: lower values trace crisp/sharp corners faithfully; higher values smooth and simplify jagged pixel edges." />
+          <input type="range" id="inpContourTol" min="0.0" max="5.0" step="0.1" value="0.4" title="Calibrate outline tracing: lower values (0.0 - 0.5 px) preserve razor-sharp serifs and corners; higher values smooth jagged pixel edges." />
         </div>
         <div class="control-group">
           <div class="control-label">
@@ -474,7 +474,7 @@
       rowSpacingMm: 0.60,
       angleDeg: 30,
       threshold: 165,
-      contourTolerance: 1.5,
+      contourTolerance: 0.4,
       traceOffsetMm: 0.0,
       showTraceOutline: true,
       gridSizeMm: 10.0,
@@ -626,17 +626,43 @@
 
     function calibrateContourLoopMm(rawPts, tolPx, offsetMm, pxScaleMm) {
       if (!rawPts || rawPts.length < 4) return rawPts;
-      let pts = rawPts;
 
-      // 1. Adaptive Laplacian smoothing passes controlled by Trace Outline Calibration (tolPx)
-      const smoothPasses = Math.min(5, Math.max(0, Math.round(tolPx)));
-      const alpha = Math.min(0.35, 0.14 * tolPx);
+      // 0. Remove redundant collinear grid vertices while keeping every 90-degree pixel corner
+      const corners = [];
+      for (let i = 0; i < rawPts.length; i++) {
+        const prev = rawPts[(i - 1 + rawPts.length) % rawPts.length];
+        const curr = rawPts[i];
+        const nxt = rawPts[(i + 1) % rawPts.length];
+        const dx1 = curr[0] - prev[0], dy1 = curr[1] - prev[1];
+        const dx2 = nxt[0] - curr[0], dy2 = nxt[1] - curr[1];
+        const cross = Math.abs(dx1 * dy2 - dy1 * dx2);
+        if (cross > 1e-6) corners.push(curr);
+      }
+      let pts = corners.length >= 4 ? corners : rawPts;
+
+      // 1. Corner-Preserving Bilateral / Laplacian Smoothing:
+      // Detect sharp geometric corners (serifs, spike tips, step notches) where turn angle > 38 deg
+      // and pin them so smoothing only removes 1-pixel staircase steps along curves/diagonals!
+      const smoothPasses = Math.min(4, Math.max(1, Math.round(tolPx * 1.4)));
+      const baseAlpha = Math.min(0.34, 0.12 + 0.10 * tolPx);
       for (let pass = 0; pass < smoothPasses; pass++) {
         const nextPts = [];
-        for (let i = 0; i < pts.length; i++) {
-          const prev = pts[(i - 1 + pts.length) % pts.length];
+        const n = pts.length;
+        for (let i = 0; i < n; i++) {
+          const prev = pts[(i - 1 + n) % n];
           const curr = pts[i];
-          const nxt = pts[(i + 1) % pts.length];
+          const nxt = pts[(i + 1) % n];
+          const v1x = curr[0] - prev[0], v1y = curr[1] - prev[1];
+          const v2x = nxt[0] - curr[0], v2y = nxt[1] - curr[1];
+          const l1 = Math.hypot(v1x, v1y) || 1e-6;
+          const l2 = Math.hypot(v2x, v2y) || 1e-6;
+          const cosTheta = (v1x * v2x + v1y * v2y) / (l1 * l2);
+
+          // If this is a true macro corner (long edges meeting at a sharp angle), lock the corner vertex!
+          const isMacroSharpCorner =
+            cosTheta < 0.72 && (l1 > pxScaleMm * 1.6 || l2 > pxScaleMm * 1.6) && tolPx < 2.2;
+          const alpha = isMacroSharpCorner ? baseAlpha * 0.12 : baseAlpha;
+
           nextPts.push([
             alpha * prev[0] + (1 - 2 * alpha) * curr[0] + alpha * nxt[0],
             alpha * prev[1] + (1 - 2 * alpha) * curr[1] + alpha * nxt[1],
@@ -645,9 +671,9 @@
         pts = nextPts;
       }
 
-      // 2. Closed-loop RDP simplification (removes staircase pixel jitter while preserving corners)
-      const epsMm = Math.max(0, (tolPx - 0.4) * pxScaleMm * 0.65);
-      if (epsMm > 0.04 && pts.length >= 8) {
+      // 2. Closed-loop RDP simplification (removes sub-pixel staircase jitter while keeping sharp vertices)
+      const epsMm = Math.max(pxScaleMm * 0.35, tolPx * pxScaleMm * 0.55);
+      if (epsMm > 0.02 && pts.length >= 8) {
         const mid = Math.floor(pts.length / 2);
         const half1 = rdpSimplifyOpenMm(pts.slice(0, mid + 1), epsMm);
         const half2 = rdpSimplifyOpenMm(pts.slice(mid).concat([pts[0]]), epsMm);
@@ -657,7 +683,6 @@
 
       // 3. Outline Offset Calibration (expand or shrink along outward vertex normals)
       if (Math.abs(offsetMm) > 0.01 && pts.length >= 4) {
-        // Compute signed area to orient outward normal consistently
         let signedArea2 = 0;
         for (let i = 0; i < pts.length; i++) {
           const p0 = pts[i];
@@ -818,6 +843,77 @@
       return state.barbedWireMask;
     }
 
+    // Auto-detect dominant background color from image borders (supports dark, black, white, or colored canvas backgrounds!)
+    function detectBackgroundRgb(imgData, w, h) {
+      const samples = [];
+      const pushPx = (x, y) => {
+        const idx = (y * w + x) * 4;
+        const a = imgData[idx + 3] / 255;
+        if (a < 0.15) {
+          samples.push([255, 255, 255, 1]);
+          return;
+        }
+        samples.push([
+          Math.round(imgData[idx] * a + 255 * (1 - a)),
+          Math.round(imgData[idx + 1] * a + 255 * (1 - a)),
+          Math.round(imgData[idx + 2] * a + 255 * (1 - a)),
+          0,
+        ]);
+      };
+
+      const step = Math.max(1, Math.floor(Math.min(w, h) / 45));
+      for (let x = 0; x < w; x += step) {
+        pushPx(x, 0);
+        pushPx(x, 1);
+        pushPx(x, h - 1);
+        pushPx(x, h - 2);
+      }
+      for (let y = 0; y < h; y += step) {
+        pushPx(0, y);
+        pushPx(1, y);
+        pushPx(w - 1, y);
+        pushPx(w - 2, y);
+      }
+
+      // Bucket border samples into 16x16x16 RGB bins to find the dominant background color
+      const bins = new Map();
+      let bestKey = "";
+      let bestCount = -1;
+      for (const s of samples) {
+        const k = `${s[0] >> 4},${s[1] >> 4},${s[2] >> 4}`;
+        let entry = bins.get(k);
+        if (!entry) {
+          entry = { count: 0, r: 0, g: 0, b: 0 };
+          bins.set(k, entry);
+        }
+        entry.count++;
+        entry.r += s[0];
+        entry.g += s[1];
+        entry.b += s[2];
+        if (entry.count > bestCount) {
+          bestCount = entry.count;
+          bestKey = k;
+        }
+      }
+
+      const winner = bins.get(bestKey);
+      if (!winner || winner.count === 0) {
+        return { r: 255, g: 255, b: 255, isDarkBg: false };
+      }
+      const bgR = Math.round(winner.r / winner.count);
+      const bgG = Math.round(winner.g / winner.count);
+      const bgB = Math.round(winner.b / winner.count);
+      const bgLuma = 0.299 * bgR + 0.587 * bgG + 0.114 * bgB;
+      return {
+        r: bgR,
+        g: bgG,
+        b: bgB,
+        luma: bgLuma,
+        // Dark canvas screenshot background (e.g. #1e1e1e..#353535) where pure black (#000) ink letters sit inside a dark gray frame
+        isDarkBg: bgLuma < 125,
+      };
+    }
+
     function buildBitmapMaskFromCanvas(off) {
       const w = off.width, h = off.height;
       const octx = off.getContext("2d");
@@ -827,18 +923,32 @@
       const gArr = new Uint8Array(w * h);
       const bArr = new Uint8Array(w * h);
 
+      const bg = detectBackgroundRgb(imgData, w, h);
+
       for (let i = 0; i < w * h; i++) {
         const a = imgData[i * 4 + 3] / 255;
-        const r = Math.round(imgData[i * 4] * a + 255 * (1 - a));
-        const g = Math.round(imgData[i * 4 + 1] * a + 255 * (1 - a));
-        const b = Math.round(imgData[i * 4 + 2] * a + 255 * (1 - a));
+        const r = Math.round(imgData[i * 4] * a + bg.r * (1 - a));
+        const g = Math.round(imgData[i * 4 + 1] * a + bg.g * (1 - a));
+        const b = Math.round(imgData[i * 4 + 2] * a + bg.b * (1 - a));
         rArr[i] = r;
         gArr[i] = g;
         bArr[i] = b;
 
-        const luma = 0.299 * r + 0.587 * g + 0.114 * b;
-        const minCh = Math.min(r, g, b);
-        gray[i] = Math.round(0.45 * luma + 0.55 * minCh);
+        if (bg.isDarkBg) {
+          // On a dark gray background (e.g., R:34,G:34,B:34), both pure black letters (R:0,G:0,B:0)
+          // AND bright red/orange/white logos are foreground! Measure distance from the background color:
+          const dr = r - bg.r, dg = g - bg.g, db = b - bg.b;
+          const colorDist = Math.hypot(dr, dg, db);
+          const luma = 0.299 * r + 0.587 * g + 0.114 * b;
+          const darkerThanBg = Math.max(0, bg.luma - luma) * 3.6;
+          const brighterThanBg = Math.max(0, luma - bg.luma) * 1.35;
+          const fgStrength = Math.min(255, Math.max(colorDist * 2.4, darkerThanBg, brighterThanBg));
+          gray[i] = Math.max(0, Math.min(255, Math.round(255 - fgStrength)));
+        } else {
+          const luma = 0.299 * r + 0.587 * g + 0.114 * b;
+          const minCh = Math.min(r, g, b);
+          gray[i] = Math.round(0.45 * luma + 0.55 * minCh);
+        }
       }
 
       return {
@@ -848,6 +958,7 @@
         r: rArr,
         g: gArr,
         b: bArr,
+        bg,
         sourceCanvas: off,
         cachedThreshold: -1,
         cachedAutoColor: null,
@@ -1096,6 +1207,8 @@
       for (let i = 0; i < width * height; i++) {
         rawBin[i] = gray[i] < threshold ? 1 : 0;
       }
+      // Edge-preserving majority filter: keep sharp 1-pixel serif tips & triangular points (n >= 1)
+      // while only discarding completely isolated single-pixel background speckles (n === 1, i.e., 0 neighbors)
       const bin = new Uint8Array(width * height);
       const pixelColorHex = new Array(width * height);
       for (let y = 1; y < height - 1; y++) {
@@ -1107,7 +1220,7 @@
               n += rawBin[(y + dy) * width + (x + dx)];
             }
           }
-          const isFg = (rawBin[idx] && n >= 2) || n >= 7 ? 1 : 0;
+          const isFg = (rawBin[idx] && n >= 2) || n >= 8 ? 1 : 0;
           bin[idx] = isFg;
           if (isFg) {
             if (state.autoColor && r && g && b) {
@@ -1119,7 +1232,7 @@
         }
       }
 
-      // Erode 1-pixel anti-aliased border halos: if a border pixel's color differs from the interior majority in its 5x5 neighborhood, snap it to the interior color
+      // Erode 1-pixel anti-aliased border halos (ONLY along outer background borders, never across internal color boundaries like the black outline around the red pyramid!)
       if (state.autoColor && r && g && b) {
         const cleanedColors = pixelColorHex.slice();
         for (let y = 2; y < height - 2; y++) {
@@ -1128,10 +1241,13 @@
             if (!bin[idx]) continue;
             const touchesBg = !bin[idx - 1] || !bin[idx + 1] || !bin[idx - width] || !bin[idx + width];
             if (!touchesBg) continue;
-            // Find deepest interior neighbor (pixel in 5x5 window that does NOT touch background)
+            // Only snap low-confidence gray/purple transition pixels; if a pixel is intentionally Jet Black outline (#212529) next to a bright interior, preserve the black outline if its luminance is genuinely dark (< 55)!
+            const luma = 0.299 * r[idx] + 0.587 * g[idx] + 0.114 * b[idx];
+            if (pixelColorHex[idx] === "#212529" && luma < 52) continue;
+
             let bestInteriorColor = null;
-            for (let dy = -2; dy <= 2 && !bestInteriorColor; dy++) {
-              for (let dx = -2; dx <= 2; dx++) {
+            for (let dy = -1; dy <= 1 && !bestInteriorColor; dy++) {
+              for (let dx = -1; dx <= 1; dx++) {
                 const nIdx = (y + dy) * width + (x + dx);
                 if (!bin[nIdx]) continue;
                 const nInterior = bin[nIdx - 1] && bin[nIdx + 1] && bin[nIdx - width] && bin[nIdx + width];
@@ -1150,7 +1266,8 @@
       const labels = new Int32Array(width * height);
       const components = [];
       let currentLabel = 0;
-      const minPixels = Math.max(14, Math.round(width * height * 0.00012));
+      // Preserve small side triangles and fine geometric accents (minPixels = 10 at 560x560)
+      const minPixels = Math.max(8, Math.round(width * height * 0.000035));
       const queue = new Int32Array(width * height);
       const compMaskScratch = new Uint8Array(width * height);
 
@@ -1222,9 +1339,11 @@
           );
           const maxStrokeWidthMm = maxRadiusPx * 2.0 * pxScaleMm;
           const bboxSpanMm = Math.hypot((maxX - minX) * pxScaleMm, (maxY - minY) * pxScaleMm);
-          // Only classify genuinely narrow line-art strokes (<= 4.5 px radius / ~2.7 mm width) as single-spine satin columns;
-          // wider block letters (like R, E, D, C, O) and solid emblems use clean Tatami Fill + Contour Lock
-          const isThinStroke = maxRadiusPx <= 4.5 || (bboxSpanMm / Math.max(0.6, maxStrokeWidthMm) >= 4.2 && maxRadiusPx <= 7.0);
+          // Only classify genuinely narrow line-art strokes (<= 1.8 mm stroke width) as single-spine satin columns;
+          // wider block letters (like R, E, D, C, O), stepped pyramid borders, and solid emblems use Tatami Fill + Crisp Contour Lock!
+          const isThinStroke =
+            maxStrokeWidthMm <= 1.75 ||
+            (bboxSpanMm / Math.max(0.5, maxStrokeWidthMm) >= 6.0 && maxStrokeWidthMm <= 2.35);
           const skeletonChainsMm = isThinStroke
             ? extractMedialSkeletonChainsMm(
                 compMaskScratch, distField, width, height, minX, maxX, minY, maxY, pxToMmX, pxToMmY, pxScaleMm
@@ -1826,9 +1945,17 @@
         for (const comp of comps) {
           const col = state.autoColor ? comp.colorHex : state.threadColor;
 
-          // Hybrid Auto-Digitize: Narrow strokes (barbed wire strands, coils, sharp spikes, outlines)
-          // are converted into Medial-Axis Satin Columns instead of parallel Tatami scanline scribbles!
-          if (state.autoSatinSkeleton && comp.isThinStroke && comp.skeletonChainsMm && comp.skeletonChainsMm.length) {
+          // Hybrid Auto-Digitize: Only use Medial-Axis Satin Columns when the preset is Barbed Wire
+          // or when a thin line-art stroke has very few skeleton branches (<= 3).
+          // Complex multi-corner outlines (like the stepped pyramid border) sew far more accurately
+          // with crisp Contour Lock + Tatami fill instead of fuzzy zig-zag satin fans!
+          if (
+            state.autoSatinSkeleton &&
+            comp.isThinStroke &&
+            comp.skeletonChainsMm &&
+            comp.skeletonChainsMm.length > 0 &&
+            (state.shapePreset === "barbed_wire" || comp.skeletonChainsMm.length <= 3)
+          ) {
             const branchBlocks = [];
             for (const chain of comp.skeletonChainsMm) {
               const pts = generateSatinColumnFromSpineMm(chain, rowSpacingMm, col, true);
@@ -1854,7 +1981,7 @@
             col
           );
           if (state.contourLock && comp.contoursMm && comp.contoursMm.length) {
-            const contourStep = Math.min(1.8, stitchLenMm * 0.65);
+            const contourStep = Math.min(1.6, stitchLenMm * 0.6);
             const contourBlocks = comp.contoursMm.map((loop) => sampleClosedRing(loop, contourStep, col));
             const allParts = fillPts.length ? [fillPts, ...contourBlocks] : contourBlocks;
             const mergedComp = sequenceComponentBranchesMm(allParts, comp, col);
@@ -3726,7 +3853,7 @@
       btnPreviewPlay.innerHTML = previewPlaying ? "&#10074;&#10074; Pause" : "&#9654; Simulate Sew-Out";
     });
 
-    // Bitmap Upload Processing (High-Res 360x360 Chroma-Aware Foreground Pipeline)
+    // Bitmap Upload Processing (High-Res 560x560 Edge-Preserving & Background-Auto-Detecting Pipeline)
     document.getElementById("imageInput").addEventListener("change", (e) => {
       const file = e.target.files && e.target.files[0];
       if (!file) return;
@@ -3734,13 +3861,23 @@
       reader.onload = (ev) => {
         const img = new Image();
         img.onload = () => {
-          const w = 360, h = 360;
+          const w = 560, h = 560;
           const off = document.createElement("canvas");
           off.width = w; off.height = h;
           const octx = off.getContext("2d");
-          octx.fillStyle = "#ffffff";
+
+          // Sample corner pixel of uploaded image so padding matches the image's natural background (dark or light)
+          const probe = document.createElement("canvas");
+          probe.width = 4; probe.height = 4;
+          const pctx0 = probe.getContext("2d");
+          pctx0.fillStyle = "#ffffff";
+          pctx0.fillRect(0, 0, 4, 4);
+          pctx0.drawImage(img, 0, 0, 4, 4);
+          const corner = pctx0.getImageData(0, 0, 1, 1).data;
+          octx.fillStyle = `rgb(${corner[0]}, ${corner[1]}, ${corner[2]})`;
           octx.fillRect(0, 0, w, h);
-          const scale = Math.min(w / img.width, h / img.height) * 0.90;
+
+          const scale = Math.min(w / img.width, h / img.height) * 0.92;
           const dw = img.width * scale, dh = img.height * scale;
           octx.drawImage(img, (w - dw) / 2, (h - dh) / 2, dw, dh);
 
