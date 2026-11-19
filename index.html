@@ -178,17 +178,19 @@
       <span class="brand-badge">H</span>
       <span>Image Digitizer Studio <small style="color:var(--text-muted);font-weight:400;">| TrueView Stitch Viewport</small></span>
       <span id="editModeBanner" class="edit-banner">
-        <b>Edit Markers Active:</b> Drag point to move (auto-subdivides long spans) &bull; Shift+Click line to add point &bull; Right-Click point to delete
+        <b>Edit Markers Active:</b> Drag node &bull; <b>Ctrl+Click</b> (or <b>J</b>) node/thread to toggle <b>Jump Thread</b> &bull; Shift+Click to add &bull; Right-Click to delete
       </span>
       <span id="drawToolBanner" class="edit-banner" style="background:rgba(30,144,255,0.16);border-color:#1e90ff;color:#9fd3ff;">
         <b id="drawToolBannerTitle">Draw Satin Spine:</b> Click to add points &bull; Double-Click or Enter to finish &bull; Right-Click / Esc to cancel
       </span>
     </div>
     <div class="top-actions">
-      <button id="btnEditStitches" title="Manually drag, add (Shift+Click), or delete (Right-Click) stitch markers">Edit Stitch Markers</button>
+      <button id="btnEditStitches" title="Manually drag, convert to Jump Thread (Ctrl+Click or J), add (Shift+Click), or delete (Right-Click) stitch markers">Edit Stitch Markers</button>
+      <button id="btnToggleJumpThread" title="Convert selected stitch segment between a Normal Thread and a Jump Thread (Shortcut: Ctrl+Click or J)" style="display:none;border-color:#dc3545;color:#ff8b94;">Make Jump Thread (J)</button>
+      <button id="btnTraceGridOutline" title="Manually trace a custom outline boundary snapped to the stitch grid">Grid Trace Outline</button>
       <button id="btnDrawSatin" title="Manually draw a vector centerline spine for tapered Satin Stitches">Draw Satin Spine</button>
       <button id="btnDrawRegion" title="Manually trace a closed polygon region for Tatami / Concentric Fills">Draw Fill Region</button>
-      <button id="btnClearManual" title="Clear manually drawn spines and fill regions" style="display:none;">Clear Manual</button>
+      <button id="btnClearManual" title="Clear manually drawn outlines, spines, and fill regions" style="display:none;">Clear Manual</button>
       <button id="btnHeatmap" title="Toggle Stitch Density & Puckering Heatmap Overlay">Density Heatmap</button>
       <button id="btnTrueView" class="active" title="Toggle 3D Thread TrueView">TrueView 3D</button>
       <button id="btnNeedlePts" class="active" title="Show Needle Penetrations">Needle Drops</button>
@@ -329,6 +331,14 @@
             <option value="25.4">25.4 mm (1.0 Inch Imperial Grid)</option>
           </select>
         </div>
+        <div class="control-group" style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
+          <label for="chkSnapToGrid" style="font-size:12px;cursor:pointer;" title="Snap manual outline tracing and drawing tools to the physical stitch grid intersections">Snap Tracing to Stitch Grid</label>
+          <input type="checkbox" id="chkSnapToGrid" checked style="cursor:pointer;" />
+        </div>
+        <div class="control-group" style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
+          <label for="chkUseCustomOutlineOnly" style="font-size:12px;cursor:pointer;" title="When enabled, replaces auto-bitmap tracing with your custom Grid-Traced Outlines & manual shapes">Use User-Traced Outline Only</label>
+          <input type="checkbox" id="chkUseCustomOutlineOnly" style="cursor:pointer;" />
+        </div>
       </div>
     </aside>
 
@@ -379,10 +389,11 @@
         <div class="section-title">Viewport &amp; Marker Editing</div>
         <p style="font-size:11px;color:var(--text-muted);line-height:1.5;">
           &bull; <b>Drag</b> on canvas to pan, <b>Wheel</b> to zoom.<br/>
-          &bull; <b>Image Underlay:</b> Toggle &amp; adjust opacity to inspect registration against reference art.<br/>
+          &bull; <b>Grid Trace Outline:</b> Click to trace a custom grid-snapped outline over the underlay, <b>Double-Click / Enter</b> to commit.<br/>
           &bull; <b>Draw Satin Spine / Fill Region:</b> Click points on canvas, <b>Double-Click / Enter</b> to commit.<br/>
           &bull; Click <b>Edit Stitch Markers</b> in the top bar:<br/>
-          &nbsp;&nbsp;&ndash; <b>Drag</b> any yellow stitch marker (long stretches auto-subdivide to maintain density).<br/>
+          &nbsp;&nbsp;&ndash; <b>Drag</b> any yellow stitch marker (long stretches auto-subdivide).<br/>
+          &nbsp;&nbsp;&ndash; <b>Ctrl + Click</b> (or select &amp; press <b>J</b> / <b>Make Jump Thread</b>) on a node or thread line to convert a thread into a <b>Jump Thread</b> (cyan marker).<br/>
           &nbsp;&nbsp;&ndash; <b>Shift + Click</b> a thread line to insert a stitch point.<br/>
           &nbsp;&nbsp;&ndash; <b>Right-Click</b> a stitch marker to delete it.<br/>
           &bull; Click <b>Density Heatmap</b> to check for fabric puckering hotspots.
@@ -467,6 +478,8 @@
       traceOffsetMm: 0.0,
       showTraceOutline: true,
       gridSizeMm: 10.0,
+      snapToGrid: true,
+      useCustomOutlineOnly: false,
       jumpThresholdMm: 5.5,
       hoopSizeMm: 150,
       threadColor: MADEIRA_THREADS[0].hex,
@@ -1907,7 +1920,11 @@
             pts[0].trim = true;
             blocks.push(pts);
           }
-        } else if (obj.type === "fill_region" && obj.pointsMm && obj.pointsMm.length >= 3) {
+        } else if (
+          (obj.type === "fill_region" || obj.type === "grid_outline") &&
+          obj.pointsMm &&
+          obj.pointsMm.length >= 3
+        ) {
           const poly = obj.pointsMm;
           let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
           for (const [px, py] of poly) {
@@ -1917,7 +1934,12 @@
             if (py > maxY) maxY = py;
           }
           let pts = [];
-          if (state.stitchMode === "concentric") {
+          if (obj.type === "grid_outline" && state.stitchMode === "running") {
+            pts = sampleClosedRing(poly, Math.min(2.2, state.stitchLengthMm), col);
+          } else if (obj.type === "grid_outline" && (state.stitchMode === "satin_border" || state.stitchMode === "satin_column")) {
+            const spineChain = poly.concat([poly[0]]).map(([x, y]) => ({ x, y, widthMm: 2.2 }));
+            pts = generateSatinColumnFromSpineMm(spineChain, state.rowSpacingMm, col, true);
+          } else if (state.stitchMode === "concentric") {
             const cx = (minX + maxX) * 0.5;
             const cy = (minY + maxY) * 0.5;
             const span = Math.max(4, Math.hypot(maxX - minX, maxY - minY) * 0.5);
@@ -1935,7 +1957,7 @@
               state.angleDeg,
               col
             );
-            if (state.contourLock) {
+            if (state.contourLock || obj.type === "grid_outline") {
               pts.push(...sampleClosedRing(poly, Math.min(2.0, state.stitchLengthMm * 0.7), col));
             }
           }
@@ -1953,18 +1975,23 @@
       const poly = getPresetPolygonMm(state.shapePreset);
       let raw = [];
 
-      if (state.stitchMode === "tatami") {
-        raw = generateTatamiFillMm(poly, state.stitchLengthMm, state.rowSpacingMm, state.angleDeg);
-      } else if (state.stitchMode === "satin_column") {
-        raw = generateMedialSatinColumnsMm(poly, state.rowSpacingMm);
-      } else if (state.stitchMode === "concentric") {
-        raw = generateConcentricFillMm(poly, state.stitchLengthMm, state.rowSpacingMm);
-      } else if (state.stitchMode === "satin_border") {
-        raw = generateSatinBorderMm(poly, state.rowSpacingMm);
-      } else if (state.stitchMode === "running") {
-        raw = generateRunningStitchMm(poly, state.stitchLengthMm);
-      } else {
-        raw = generatePhotoStitchMm(poly, state.stitchLengthMm, state.rowSpacingMm);
+      const skipAutoForCustomOutline =
+        state.useCustomOutlineOnly && state.manualObjects && state.manualObjects.length > 0;
+
+      if (!skipAutoForCustomOutline) {
+        if (state.stitchMode === "tatami") {
+          raw = generateTatamiFillMm(poly, state.stitchLengthMm, state.rowSpacingMm, state.angleDeg);
+        } else if (state.stitchMode === "satin_column") {
+          raw = generateMedialSatinColumnsMm(poly, state.rowSpacingMm);
+        } else if (state.stitchMode === "concentric") {
+          raw = generateConcentricFillMm(poly, state.stitchLengthMm, state.rowSpacingMm);
+        } else if (state.stitchMode === "satin_border") {
+          raw = generateSatinBorderMm(poly, state.rowSpacingMm);
+        } else if (state.stitchMode === "running") {
+          raw = generateRunningStitchMm(poly, state.stitchLengthMm);
+        } else {
+          raw = generatePhotoStitchMm(poly, state.stitchLengthMm, state.rowSpacingMm);
+        }
       }
 
       const manualStitches = generateManualObjectsStitchesMm();
@@ -1976,6 +2003,9 @@
         if (i === 0) {
           raw[i].jump = false;
           raw[i].trim = false;
+        } else if (raw[i].manualJump !== undefined) {
+          raw[i].jump = Boolean(raw[i].manualJump);
+          raw[i].trim = Boolean(raw[i].manualJump);
         } else {
           const dist = Math.hypot(raw[i].x - raw[i - 1].x, raw[i].y - raw[i - 1].y);
           const colorChanged = Boolean(state.autoColor && raw[i].color && raw[i - 1].color && raw[i].color !== raw[i - 1].color);
@@ -2218,11 +2248,14 @@
         const r = state.editMode
           ? Math.max(3.2, 0.32 * state.zoomPxPerMm)
           : Math.max(1.1, 0.14 * state.zoomPxPerMm);
+
+        // Normal stitch markers
         ctx.fillStyle = state.editMode ? "#ffd166" : "#111";
         ctx.strokeStyle = "#111";
         ctx.lineWidth = 1.0;
         ctx.beginPath();
         for (let i = 0; i < count; i++) {
+          if (state.editMode && i > 0 && pts[i].jump) continue;
           const [nx, ny] = mmToScreen(pts[i].x, pts[i].y);
           ctx.moveTo(nx + r, ny);
           ctx.arc(nx, ny, r, 0, Math.PI * 2);
@@ -2230,13 +2263,32 @@
         ctx.fill();
         if (state.editMode) ctx.stroke();
 
+        // Jump stitch target markers (cyan/crimson diamond-ring markers in Edit Mode)
+        if (state.editMode) {
+          ctx.fillStyle = "#00e5ff";
+          ctx.strokeStyle = "#dc3545";
+          ctx.lineWidth = 1.6;
+          ctx.beginPath();
+          for (let i = 1; i < count; i++) {
+            if (!pts[i].jump) continue;
+            const [nx, ny] = mmToScreen(pts[i].x, pts[i].y);
+            ctx.moveTo(nx + r + 0.8, ny);
+            ctx.arc(nx, ny, r + 0.8, 0, Math.PI * 2);
+          }
+          ctx.fill();
+          ctx.stroke();
+        }
+
         // Highlight hovered or selected stitch marker
-        const highlightIdx = state.draggingStitchIdx >= 0 ? state.draggingStitchIdx : state.hoverStitchIdx;
+        const highlightIdx =
+          state.draggingStitchIdx >= 0
+            ? state.draggingStitchIdx
+            : (state.hoverStitchIdx >= 0 ? state.hoverStitchIdx : state.selectedStitchIdx);
         if (state.editMode && highlightIdx >= 0 && highlightIdx < count) {
           const [hx, hy] = mmToScreen(pts[highlightIdx].x, pts[highlightIdx].y);
-          ctx.strokeStyle = "#ff2a2a";
+          ctx.strokeStyle = pts[highlightIdx].jump ? "#00e5ff" : "#ff2a2a";
           ctx.fillStyle = "#ffffff";
-          ctx.lineWidth = 2.0;
+          ctx.lineWidth = 2.2;
           ctx.beginPath();
           ctx.arc(hx, hy, r + 2.5, 0, Math.PI * 2);
           ctx.fill();
@@ -2310,17 +2362,32 @@
               if (i === 0) ctx.moveTo(sx, sy);
               else ctx.lineTo(sx, sy);
             }
-            if (obj.type === "fill_region") ctx.closePath();
+            if (obj.type === "fill_region" || obj.type === "grid_outline") ctx.closePath();
             ctx.stroke();
           }
         }
 
         // Active in-progress vector drawing tool preview
+        if (state.drawTool) {
+          const [cx, cy] = mmToScreen(state.cursorMm[0], state.cursorMm[1]);
+          // Show live grid-snap target reticle when Snap Tracing to Stitch Grid is active
+          if (state.snapToGrid) {
+            ctx.save();
+            ctx.strokeStyle = "#00ff88";
+            ctx.lineWidth = 1.4;
+            ctx.beginPath();
+            ctx.arc(cx, cy, 6, 0, Math.PI * 2);
+            ctx.moveTo(cx - 9, cy); ctx.lineTo(cx + 9, cy);
+            ctx.moveTo(cx, cy - 9); ctx.lineTo(cx, cy + 9);
+            ctx.stroke();
+            ctx.restore();
+          }
+        }
         if (state.drawTool && state.activeDraftPtsMm.length > 0) {
           const draft = state.activeDraftPtsMm;
-          ctx.setLineDash([]);
-          ctx.strokeStyle = "#00e5ff";
-          ctx.fillStyle = "rgba(0, 229, 255, 0.16)";
+          ctx.setLineDash(state.drawTool === "grid_outline" ? [5, 3] : []);
+          ctx.strokeStyle = state.drawTool === "grid_outline" ? "#00ff88" : "#00e5ff";
+          ctx.fillStyle = state.drawTool === "grid_outline" ? "rgba(0, 255, 136, 0.14)" : "rgba(0, 229, 255, 0.16)";
           ctx.lineWidth = 2.2;
           ctx.beginPath();
           for (let i = 0; i < draft.length; i++) {
@@ -2330,7 +2397,7 @@
           }
           const [cx, cy] = mmToScreen(state.cursorMm[0], state.cursorMm[1]);
           ctx.lineTo(cx, cy);
-          if (state.drawTool === "fill_region" && draft.length >= 2) {
+          if ((state.drawTool === "fill_region" || state.drawTool === "grid_outline") && draft.length >= 2) {
             ctx.closePath();
             ctx.fill();
           }
@@ -2527,6 +2594,9 @@
         if (i === 0) {
           pts[i].jump = false;
           pts[i].trim = false;
+        } else if (pts[i].manualJump !== undefined) {
+          pts[i].jump = Boolean(pts[i].manualJump);
+          pts[i].trim = Boolean(pts[i].manualJump);
         } else {
           const d = Math.hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y);
           const colorChanged = Boolean(state.autoColor && pts[i].color && pts[i - 1].color && pts[i].color !== pts[i - 1].color);
@@ -2534,7 +2604,49 @@
           pts[i].trim = d > state.jumpThresholdMm * 1.4 || colorChanged;
         }
       }
+      updateJumpToggleButtonUI();
       updateTelemetry();
+    }
+
+    function updateJumpToggleButtonUI() {
+      const btn = document.getElementById("btnToggleJumpThread");
+      if (!btn) return;
+      if (!state.editMode) {
+        btn.style.display = "none";
+        return;
+      }
+      btn.style.display = "inline-flex";
+      const idx = state.selectedStitchIdx >= 1 ? state.selectedStitchIdx : state.hoverStitchIdx;
+      if (idx >= 1 && idx < state.stitches.length) {
+        const isJmp = Boolean(state.stitches[idx].jump);
+        btn.textContent = isJmp ? `Make Normal Stitch (#${idx})` : `Make Jump Thread (#${idx})`;
+        btn.classList.toggle("active", isJmp);
+      } else {
+        btn.textContent = "Make Jump Thread (J)";
+        btn.classList.remove("active");
+      }
+    }
+
+    function toggleStitchJumpAt(idx) {
+      if (idx < 1 || idx >= state.stitches.length) return;
+      const pt = state.stitches[idx];
+      const nextJumpState = !Boolean(pt.jump);
+      pt.manualJump = nextJumpState;
+      pt.jump = nextJumpState;
+      pt.trim = nextJumpState;
+      state.selectedStitchIdx = idx;
+      recomputeJumpFlags();
+      renderViewport();
+    }
+
+    function snapPointToStitchGridMm(xMm, yMm) {
+      if (!state.snapToGrid) return [xMm, yMm];
+      // Snap to fine half-grid increments of the selected Stitch Grid Scale Size (or 0.5mm min)
+      const snapStep = Math.max(0.5, (state.gridSizeMm || 10.0) >= 5.0 ? (state.gridSizeMm / 4.0) : (state.gridSizeMm * 0.5));
+      return [
+        Math.round(xMm / snapStep) * snapStep,
+        Math.round(yMm / snapStep) * snapStep,
+      ];
     }
 
     // Dynamic density recalculation on dragged stitch node: subdivide stretched non-jump segments
@@ -2606,13 +2718,21 @@
         state.editMode = false;
         document.getElementById("btnEditStitches").classList.remove("active");
         document.getElementById("editModeBanner").classList.remove("visible");
+        updateJumpToggleButtonUI();
       }
+      document.getElementById("btnTraceGridOutline").classList.toggle("active", state.drawTool === "grid_outline");
       document.getElementById("btnDrawSatin").classList.toggle("active", state.drawTool === "satin_spine");
       document.getElementById("btnDrawRegion").classList.toggle("active", state.drawTool === "fill_region");
       const banner = document.getElementById("drawToolBanner");
       const bannerTitle = document.getElementById("drawToolBannerTitle");
       if (state.drawTool) {
-        bannerTitle.textContent = state.drawTool === "satin_spine" ? "Draw Satin Spine:" : "Draw Fill Region:";
+        if (state.drawTool === "grid_outline") {
+          bannerTitle.textContent = "Grid Trace Outline (Snapped to Stitch Grid):";
+        } else if (state.drawTool === "satin_spine") {
+          bannerTitle.textContent = "Draw Satin Spine:";
+        } else {
+          bannerTitle.textContent = "Draw Fill Region:";
+        }
         banner.classList.add("visible");
         canvas.style.cursor = "crosshair";
       } else {
@@ -2634,6 +2754,7 @@
           widthMm: 2.8,
         });
         document.getElementById("btnClearManual").style.display = "inline-flex";
+        // If user traced a custom Grid Outline, automatically enable custom outline mode if they want clean replacement
         state.activeDraftPtsMm = [];
         regenerateDesign();
       } else {
@@ -2716,6 +2837,14 @@
     });
 
     window.addEventListener("keydown", (e) => {
+      if (state.editMode && (e.key === "j" || e.key === "J")) {
+        e.preventDefault();
+        const targetIdx = state.selectedStitchIdx >= 1 ? state.selectedStitchIdx : state.hoverStitchIdx;
+        if (targetIdx >= 1) {
+          toggleStitchJumpAt(targetIdx);
+        }
+        return;
+      }
       if (!state.drawTool) return;
       if (e.key === "Enter") {
         e.preventDefault();
@@ -2733,10 +2862,11 @@
       const sy = e.clientY - rect.top;
 
       if (state.drawTool && e.button === 0) {
-        const [mx, my] = screenToMm(sx, sy);
+        const [rawMx, rawMy] = screenToMm(sx, sy);
+        const [mx, my] = snapPointToStitchGridMm(rawMx, rawMy);
         const draft = state.activeDraftPtsMm;
         // Avoid duplicate vertex on double-click
-        if (!draft.length || Math.hypot(mx - draft[draft.length - 1][0], my - draft[draft.length - 1][1]) > 0.35) {
+        if (!draft.length || Math.hypot(mx - draft[draft.length - 1][0], my - draft[draft.length - 1][1]) > 0.25) {
           draft.push([mx, my]);
         }
         renderViewport();
@@ -2744,6 +2874,18 @@
       }
 
       if (state.editMode && e.button === 0) {
+        // Ctrl + Click (or Cmd + Click) on a stitch marker OR thread segment converts that thread into a Jump Thread (or back to Normal)
+        if (e.ctrlKey || e.metaKey) {
+          let targetIdx = findNearestStitchIndexScreen(sx, sy, 12);
+          if (targetIdx < 1) {
+            targetIdx = findNearestSegmentIndexScreen(sx, sy, 14);
+          }
+          if (targetIdx >= 1) {
+            toggleStitchJumpAt(targetIdx);
+            return;
+          }
+        }
+
         // Shift + Click on a thread segment drops a new stitch marker at the cursor
         if (e.shiftKey) {
           const insertIdx = findNearestSegmentIndexScreen(sx, sy, 14);
@@ -2761,16 +2903,27 @@
           scrubberEl.max = Math.max(2, state.stitches.length);
           scrubberEl.value = state.visibleCount;
           state.draggingStitchIdx = targetIdx;
+          state.selectedStitchIdx = targetIdx;
           recomputeJumpFlags();
           renderViewport();
           return;
         }
 
-        // Click on an existing stitch marker to drag it
+        // Click on an existing stitch marker to select & drag it
         const hitIdx = findNearestStitchIndexScreen(sx, sy, 11);
         if (hitIdx >= 0) {
           state.draggingStitchIdx = hitIdx;
           state.selectedStitchIdx = hitIdx;
+          updateJumpToggleButtonUI();
+          renderViewport();
+          return;
+        }
+
+        // Click directly on a thread segment in Edit Mode selects its target stitch so user can click "Make Jump Thread (J)"
+        const segIdx = findNearestSegmentIndexScreen(sx, sy, 10);
+        if (segIdx >= 1) {
+          state.selectedStitchIdx = segIdx;
+          updateJumpToggleButtonUI();
           renderViewport();
           return;
         }
@@ -2786,12 +2939,13 @@
       const sx = e.clientX - rect.left;
       const sy = e.clientY - rect.top;
       if (sx >= 0 && sy >= 0 && sx <= rect.width && sy <= rect.height) {
-        const [mx, my] = screenToMm(sx, sy);
+        const [rawMx, rawMy] = screenToMm(sx, sy);
+        const [mx, my] = state.drawTool ? snapPointToStitchGridMm(rawMx, rawMy) : [rawMx, rawMy];
         state.cursorMm = [mx, my];
         document.getElementById("coordReadout").textContent =
-          `X: ${mx.toFixed(1)} mm, Y: ${(-my).toFixed(1)} mm`;
+          `X: ${mx.toFixed(1)} mm, Y: ${(-my).toFixed(1)} mm${state.drawTool && state.snapToGrid ? " [GRID SNAP]" : ""}`;
 
-        if (state.drawTool && state.activeDraftPtsMm.length > 0) {
+        if (state.drawTool) {
           renderViewport();
         }
 
@@ -2810,6 +2964,7 @@
           const hoverIdx = findNearestStitchIndexScreen(sx, sy, 11);
           if (hoverIdx !== state.hoverStitchIdx) {
             state.hoverStitchIdx = hoverIdx;
+            updateJumpToggleButtonUI();
             canvas.style.cursor = hoverIdx >= 0 ? "grab" : (e.shiftKey ? "copy" : "crosshair");
             renderViewport();
           }
@@ -2940,6 +3095,16 @@
       renderViewport();
     });
 
+    document.getElementById("chkSnapToGrid").addEventListener("change", (e) => {
+      state.snapToGrid = e.target.checked;
+      renderViewport();
+    });
+
+    document.getElementById("chkUseCustomOutlineOnly").addEventListener("change", (e) => {
+      state.useCustomOutlineOnly = e.target.checked;
+      regenerateDesign();
+    });
+
     document.getElementById("chkContourLock").addEventListener("change", (e) => {
       state.contourLock = e.target.checked;
       regenerateDesign();
@@ -2968,8 +3133,21 @@
       state.draggingStitchIdx = -1;
       e.currentTarget.classList.toggle("active", state.editMode);
       document.getElementById("editModeBanner").classList.toggle("visible", state.editMode);
+      updateJumpToggleButtonUI();
       canvas.style.cursor = state.editMode ? "crosshair" : "grab";
       renderViewport();
+    });
+
+    document.getElementById("btnToggleJumpThread").addEventListener("click", () => {
+      if (!state.editMode) return;
+      const targetIdx = state.selectedStitchIdx >= 1 ? state.selectedStitchIdx : state.hoverStitchIdx;
+      if (targetIdx >= 1) {
+        toggleStitchJumpAt(targetIdx);
+      }
+    });
+
+    document.getElementById("btnTraceGridOutline").addEventListener("click", () => {
+      setDrawTool("grid_outline");
     });
 
     document.getElementById("btnDrawSatin").addEventListener("click", () => {
