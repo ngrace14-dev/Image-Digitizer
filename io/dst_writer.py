@@ -87,7 +87,12 @@ def _encode_dst_record(dx: int, dy: int, jump: bool = False) -> bytes:
     return bytes([b0, b1, b2])
 
 
-def write_dst(filepath: str, stitches_mm: List[Point2D], label: str = "DESIGN") -> None:
+def write_dst(
+    filepath: str,
+    stitches_mm: List[Point2D],
+    label: str = "DESIGN",
+    jump_threshold_mm: float = 5.5,
+) -> None:
     """Write stitch coordinates (in millimeters) to a valid Tajima .DST binary file."""
     header_text = (
         f"LA:{label[:16]:<16}\r"
@@ -110,12 +115,14 @@ def write_dst(filepath: str, stitches_mm: List[Point2D], label: str = "DESIGN") 
     body = bytearray()
     prev_x = 0
     prev_y = 0
+    jump_thresh_units = mm_to_units(jump_threshold_mm)
 
-    for x_mm, y_mm in stitches_mm:
+    for idx, (x_mm, y_mm) in enumerate(stitches_mm):
         curr_x = mm_to_units(x_mm)
         curr_y = mm_to_units(y_mm)
         dx = curr_x - prev_x
         dy = curr_y - prev_y
+        is_jump = idx > 0 and (dx * dx + dy * dy) > (jump_thresh_units * jump_thresh_units)
 
         # Break long jumps into max +/-121 unit steps
         while abs(dx) > 121 or abs(dy) > 121:
@@ -125,7 +132,7 @@ def write_dst(filepath: str, stitches_mm: List[Point2D], label: str = "DESIGN") 
             dx -= step_x
             dy -= step_y
 
-        body.extend(_encode_dst_record(dx, dy, jump=False))
+        body.extend(_encode_dst_record(dx, dy, jump=is_jump))
         prev_x = curr_x
         prev_y = curr_y
 

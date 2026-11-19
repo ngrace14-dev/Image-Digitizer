@@ -2,9 +2,10 @@
 
 import math
 from typing import Callable, List, Optional, Sequence, Tuple
-from PyQt6.QtWidgets import QGraphicsScene, QGraphicsView
-from PyQt6.QtGui import QPen, QBrush, QColor, QPainter, QWheelEvent, QMouseEvent
+from PyQt6.QtWidgets import QGraphicsPixmapItem, QGraphicsScene, QGraphicsView
+from PyQt6.QtGui import QPen, QBrush, QColor, QPainter, QPixmap, QWheelEvent, QMouseEvent
 from PyQt6.QtCore import Qt
+from core.stitch_engine import compute_density_heatmap, subdivide_stitch_segment
 
 Point2D = Tuple[float, float]
 
@@ -25,8 +26,34 @@ class StitchViewport(QGraphicsView):
         self._stitches: List[Point2D] = []
         self.edit_mode: bool = False
         self.hide_jumps: bool = False
+        self.show_heatmap: bool = False
+        self.jump_threshold_mm: float = 5.5
+        self.target_stitch_length_mm: float = 2.5
+        self._underlay_pixmap: Optional[QPixmap] = None
+        self._underlay_visible: bool = True
+        self._underlay_opacity: float = 0.42
+        self._underlay_scale_mm: float = 0.25
         self._dragging_idx: int = -1
         self._auto_fit_done: bool = False
+
+    def set_underlay_image(self, image_path: str, pixel_scale_mm: float = 0.25) -> None:
+        pixmap = QPixmap(image_path)
+        if not pixmap.isNull():
+            self._underlay_pixmap = pixmap
+            self._underlay_scale_mm = pixel_scale_mm
+            self.render_stitches(self._stitches, preserve_view=True)
+
+    def set_underlay_visible(self, visible: bool) -> None:
+        self._underlay_visible = visible
+        self.render_stitches(self._stitches, preserve_view=True)
+
+    def set_underlay_opacity(self, opacity: float) -> None:
+        self._underlay_opacity = max(0.0, min(1.0, opacity))
+        self.render_stitches(self._stitches, preserve_view=True)
+
+    def set_heatmap_enabled(self, enabled: bool) -> None:
+        self.show_heatmap = enabled
+        self.render_stitches(self._stitches, preserve_view=True)
 
     def set_edit_mode(self, enabled: bool) -> None:
         self.edit_mode = enabled
@@ -45,6 +72,13 @@ class StitchViewport(QGraphicsView):
             self.hide_jumps = hide_jumps
         self._stitches = list(stitches)
         self.scene.clear()
+
+        if self._underlay_pixmap is not None and self._underlay_visible and self._underlay_opacity > 0.01:
+            item = QGraphicsPixmapItem(self._underlay_pixmap)
+            item.setScale(self._underlay_scale_mm)
+            item.setOpacity(self._underlay_opacity)
+            item.setZValue(-10.0)
+            self.scene.addItem(item)
 
         if len(self._stitches) < 2:
             return
@@ -65,7 +99,7 @@ class StitchViewport(QGraphicsView):
         for i in range(len(self._stitches) - 1):
             x1, y1 = self._stitches[i]
             x2, y2 = self._stitches[i + 1]
-            if math.hypot(x2 - x1, y2 - y1) > 7.0:
+            if math.hypot(x2 - x1, y2 - y1) > self.jump_threshold_mm:
                 if not self.hide_jumps:
                     self.scene.addLine(x1, y1, x2, y2, jump_pen)
             else:
@@ -74,6 +108,30 @@ class StitchViewport(QGraphicsView):
 
         last_x, last_y = self._stitches[-1]
         self.scene.addEllipse(last_x - r, last_y - r, r * 2, r * 2, needle_pen, needle_brush)
+
+        if self.show_heatmap:
+            cell_mm = 2.0
+            heatmap = compute_density_heatmap(self._stitches, cell_size_mm=cell_mm)
+            no_pen = QPen(Qt.PenStyle.NoPen)
+            for (gx, gy), count in heatmap.items():
+                if count < 3:
+                    continue
+                if count >= 11:
+                    col = QColor(255, 25, 45, 140)
+                elif count >= 7:
+                    col = QColor(255, 140, 0, 115)
+                else:
+                    col = QColor(255, 214, 10, 90)
+                rect_item = self.scene.addRect(
+                    gx * cell_mm,
+                    gy * cell_mm,
+                    cell_mm,
+                    cell_mm,
+                    no_pen,
+                    QBrush(col),
+                )
+                if rect_item is not None:
+                    rect_item.setZValue(5.0)
 
         if not preserve_view and not self._auto_fit_done:
             self.fitInView(self.scene.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
@@ -135,7 +193,17 @@ class StitchViewport(QGraphicsView):
 
     def mouseReleaseEvent(self, event: QMouseEvent | None) -> None:
         if self._dragging_idx >= 0:
+            dragged = self._dragging_idx
             self._dragging_idx = -1
+            self._stitches = subdivide_stitch_segment(
+                self._stitches,
+                dragged,
+                target_length_mm=self.target_stitch_length_mm,
+                max_stitch_threshold_mm=self.jump_threshold_mm,
+            )
+            self.render_stitches(self._stitches, preserve_view=True)
+            if self.on_stitches_changed:
+                self.on_stitches_changed(self._stitches)
         super().mouseReleaseEvent(event)
 
     def wheelEvent(self, event: QWheelEvent | None) -> None:

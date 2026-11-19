@@ -178,14 +178,27 @@
       <span class="brand-badge">H</span>
       <span>Image Digitizer Studio <small style="color:var(--text-muted);font-weight:400;">| TrueView Stitch Viewport</small></span>
       <span id="editModeBanner" class="edit-banner">
-        <b>Edit Markers Active:</b> Drag point to move &bull; Shift+Click line to add point &bull; Right-Click point to delete
+        <b>Edit Markers Active:</b> Drag point to move (auto-subdivides long spans) &bull; Shift+Click line to add point &bull; Right-Click point to delete
+      </span>
+      <span id="drawToolBanner" class="edit-banner" style="background:rgba(30,144,255,0.16);border-color:#1e90ff;color:#9fd3ff;">
+        <b id="drawToolBannerTitle">Draw Satin Spine:</b> Click to add points &bull; Double-Click or Enter to finish &bull; Right-Click / Esc to cancel
       </span>
     </div>
     <div class="top-actions">
       <button id="btnEditStitches" title="Manually drag, add (Shift+Click), or delete (Right-Click) stitch markers">Edit Stitch Markers</button>
+      <button id="btnDrawSatin" title="Manually draw a vector centerline spine for tapered Satin Stitches">Draw Satin Spine</button>
+      <button id="btnDrawRegion" title="Manually trace a closed polygon region for Tatami / Concentric Fills">Draw Fill Region</button>
+      <button id="btnClearManual" title="Clear manually drawn spines and fill regions" style="display:none;">Clear Manual</button>
+      <button id="btnHeatmap" title="Toggle Stitch Density & Puckering Heatmap Overlay">Density Heatmap</button>
       <button id="btnTrueView" class="active" title="Toggle 3D Thread TrueView">TrueView 3D</button>
       <button id="btnNeedlePts" class="active" title="Show Needle Penetrations">Needle Drops</button>
       <button id="btnGrid" class="active" title="Show 10mm Hoop Grid">Grid &amp; Hoop</button>
+      <button id="btnUnderlay" class="active" title="Toggle Reference Image Underlay on Main Canvas">Image Underlay</button>
+      <div style="display:inline-flex;align-items:center;gap:5px;background:var(--bg-panel);border:1px solid var(--border);padding:4px 8px;border-radius:5px;font-size:11px;" title="Adjust Reference Image Underlay Opacity (0% - 100%)">
+        <span style="color:var(--text-muted);">Opacity</span>
+        <input type="range" id="inpUnderlayOpacity" min="0" max="100" step="1" value="42" style="width:62px;" />
+        <span id="valUnderlayOpacity" style="min-width:28px;text-align:right;color:var(--accent);font-weight:600;">42%</span>
+      </div>
       <button id="btnFitView" title="Fit Design in Viewport">Fit to Screen</button>
       <button id="btnExportDst" class="primary" title="Preview Sew-Out & Export Tajima .DST Binary File">Export .DST</button>
     </div>
@@ -203,6 +216,7 @@
             <option value="circle">Circle Badge (Ø 65 mm)</option>
             <option value="star" selected>5-Point Star (75 mm)</option>
             <option value="heart">Embroidered Heart (70 mm)</option>
+            <option value="barbed_wire">Barbed Wire Coil &amp; Spikes (Line-Art Test)</option>
             <option value="image">Custom Uploaded Bitmap</option>
           </select>
         </div>
@@ -225,8 +239,12 @@
           <input type="checkbox" id="chkContourLock" checked style="cursor:pointer;" />
         </div>
         <div class="control-group" style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
-          <label for="chkAutoColor" style="font-size:12px;cursor:pointer;">Auto-Detect Image Colors</label>
+          <label for="chkAutoColor" style="font-size:12px;cursor:pointer;">Auto-Detect &amp; Separate Color Layers</label>
           <input type="checkbox" id="chkAutoColor" checked style="cursor:pointer;" />
+        </div>
+        <div class="control-group" style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
+          <label for="chkAutoSatinSkeleton" style="font-size:12px;cursor:pointer;" title="Extract medial-axis skeleton and width profile on thin strokes/barbs to generate tapered Satin columns">Medial-Axis Satin Columns (Line-Art)</label>
+          <input type="checkbox" id="chkAutoSatinSkeleton" checked style="cursor:pointer;" />
         </div>
       </div>
 
@@ -235,12 +253,20 @@
         <div class="control-group">
           <div class="control-label"><span>Stitch Engine Mode</span></div>
           <select id="stitchMode">
-            <option value="tatami" selected>Method A: Tatami Fill (Parallel)</option>
+            <option value="tatami" selected>Method A: Hybrid Auto-Digitize (Satin + Tatami)</option>
+            <option value="satin_column">Method C: Medial-Axis Satin Columns &amp; Branching</option>
             <option value="concentric">Method A: Concentric Contour Fill</option>
             <option value="satin_border">Method C: Satin Turning Border</option>
-            <option value="running">Method C: Running Stitch Outline</option>
+            <option value="running">Method C: Centerline Branching &amp; Running Outline</option>
             <option value="photostitch">Method B: PhotoStitch (Variegated)</option>
           </select>
+        </div>
+        <div class="control-group">
+          <div class="control-label">
+            <span>Max Stitch / Jump Threshold</span>
+            <span class="control-value" id="valJumpThreshold">5.5 mm</span>
+          </div>
+          <input type="range" id="inpJumpThreshold" min="3.5" max="10.0" step="0.5" value="5.5" />
         </div>
         <div class="control-group">
           <div class="control-label">
@@ -308,10 +334,12 @@
       <div class="section">
         <div class="section-title">Design Telemetry</div>
         <div class="stat-row"><span>Total Stitches</span><span class="stat-val" id="statStitches">0</span></div>
-        <div class="stat-row"><span>Jump Stitches (&gt;7mm)</span><span class="stat-val" id="statJumps">0</span></div>
+        <div class="stat-row"><span id="lblStatJumps">Jump Stitches (&gt;5.5mm)</span><span class="stat-val" id="statJumps">0</span></div>
+        <div class="stat-row"><span>Color Layers</span><span class="stat-val" id="statColors">1</span></div>
         <div class="stat-row"><span>Total Thread Length</span><span class="stat-val" id="statThread">0.0 m</span></div>
         <div class="stat-row"><span>Design Width</span><span class="stat-val" id="statWidth">0.0 mm</span></div>
         <div class="stat-row"><span>Design Height</span><span class="stat-val" id="statHeight">0.0 mm</span></div>
+        <div class="stat-row"><span>Peak Density (2×2mm)</span><span class="stat-val" id="statPeakDensity">0 pts</span></div>
         <div class="stat-row"><span>Est. Machine Time (750 spm)</span><span class="stat-val" id="statTime">0m 00s</span></div>
       </div>
 
@@ -319,11 +347,13 @@
         <div class="section-title">Viewport &amp; Marker Editing</div>
         <p style="font-size:11px;color:var(--text-muted);line-height:1.5;">
           &bull; <b>Drag</b> on canvas to pan, <b>Wheel</b> to zoom.<br/>
+          &bull; <b>Image Underlay:</b> Toggle &amp; adjust opacity to inspect registration against reference art.<br/>
+          &bull; <b>Draw Satin Spine / Fill Region:</b> Click points on canvas, <b>Double-Click / Enter</b> to commit.<br/>
           &bull; Click <b>Edit Stitch Markers</b> in the top bar:<br/>
-          &nbsp;&nbsp;&ndash; <b>Drag</b> any yellow stitch marker to fix alignment.<br/>
-          &nbsp;&nbsp;&ndash; <b>Shift + Click</b> a thread line to drop a new stitch point.<br/>
+          &nbsp;&nbsp;&ndash; <b>Drag</b> any yellow stitch marker (long stretches auto-subdivide to maintain density).<br/>
+          &nbsp;&nbsp;&ndash; <b>Shift + Click</b> a thread line to insert a stitch point.<br/>
           &nbsp;&nbsp;&ndash; <b>Right-Click</b> a stitch marker to delete it.<br/>
-          &bull; Click <b>Export .DST</b> to open the <b>Sew-Out Preview</b> before saving.
+          &bull; Click <b>Density Heatmap</b> to check for fabric puckering hotspots.
         </p>
       </div>
     </aside>
@@ -401,14 +431,23 @@
       rowSpacingMm: 0.60,
       angleDeg: 30,
       threshold: 165,
+      jumpThresholdMm: 5.5,
       hoopSizeMm: 150,
       threadColor: MADEIRA_THREADS[0].hex,
       trueView: true,
       showNeedles: true,
       showGrid: true,
+      showUnderlay: true,
+      underlayOpacity: 0.42,
+      showHeatmap: false,
       contourLock: true,
       autoColor: true,
+      autoSatinSkeleton: true,
       editMode: false,
+      drawTool: null, // null | 'satin_spine' | 'fill_region'
+      activeDraftPtsMm: [],
+      cursorMm: [0, 0],
+      manualObjects: [], // Array of { type: 'satin_spine' | 'fill_region', pointsMm: [[x,y],...], color: string, widthMm?: number }
       selectedStitchIdx: -1,
       hoverStitchIdx: -1,
       draggingStitchIdx: -1,
@@ -418,11 +457,13 @@
       panY: 0,
       zoomPxPerMm: 4.2,
 
-      // Generated stitch list: Array of { x: mm, y: mm, jump?: boolean, color?: string }
+      // Generated stitch list: Array of { x: mm, y: mm, jump?: boolean, trim?: boolean, color?: string }
       stitches: [],
       visibleCount: 0,
       isPlaying: false,
       uploadedImage: null,
+      underlayCanvas: null,
+      barbedWireMask: null,
       bitmapMask: null, // { width, height, gray, r, g, b, components, contoursMm }
     };
 
@@ -572,9 +613,309 @@
       return loops;
     }
 
+    function getOrBuildBarbedWireMask() {
+      if (state.barbedWireMask) return state.barbedWireMask;
+      const w = 360, h = 360;
+      const off = document.createElement("canvas");
+      off.width = w; off.height = h;
+      const octx = off.getContext("2d");
+      octx.fillStyle = "#ffffff";
+      octx.fillRect(0, 0, w, h);
+      octx.lineCap = "round";
+      octx.lineJoin = "round";
+
+      const drawStrand = (phaseOffset, strokeColor, lineWidth) => {
+        octx.strokeStyle = strokeColor;
+        octx.lineWidth = lineWidth;
+        octx.beginPath();
+        for (let x = 28; x <= 332; x += 3) {
+          const t = (x - 28) / 304;
+          const wave = Math.sin(t * Math.PI * 4 + phaseOffset) * 7.5;
+          const arch = Math.sin(t * Math.PI) * -18;
+          const y = 180 + arch + wave;
+          if (x === 28) octx.moveTo(x, y);
+          else octx.lineTo(x, y);
+        }
+        octx.stroke();
+      };
+
+      const barbStations = [95, 180, 265];
+      const drawBarbs = (strokeColor, lineWidth, isCore) => {
+        octx.strokeStyle = strokeColor;
+        octx.lineWidth = lineWidth;
+        for (let s = 0; s < barbStations.length; s++) {
+          const cx = barbStations[s];
+          const t = (cx - 28) / 304;
+          const cy = 180 + Math.sin(t * Math.PI) * -18;
+          for (let dx = -8; dx <= 8; dx += 5) {
+            octx.beginPath();
+            octx.moveTo(cx + dx - 2, cy - 12);
+            octx.lineTo(cx + dx + 2, cy + 12);
+            octx.stroke();
+          }
+          const angles = [-2.25, -0.85, 0.85, 2.25];
+          for (const ang of angles) {
+            const len = isCore ? 34 : 38;
+            octx.beginPath();
+            octx.moveTo(cx, cy);
+            octx.lineTo(cx + Math.cos(ang) * len, cy + Math.sin(ang) * len);
+            octx.stroke();
+          }
+        }
+      };
+
+      drawStrand(0, "#1c1e24", 11);
+      drawStrand(Math.PI, "#1c1e24", 11);
+      drawBarbs("#1c1e24", 10, false);
+
+      drawStrand(0, "#1e90ff", 5.2);
+      drawStrand(Math.PI, "#1e90ff", 5.2);
+      drawBarbs("#e62e2d", 4.5, true);
+
+      state.barbedWireMask = buildBitmapMaskFromCanvas(off);
+      return state.barbedWireMask;
+    }
+
+    function buildBitmapMaskFromCanvas(off) {
+      const w = off.width, h = off.height;
+      const octx = off.getContext("2d");
+      const imgData = octx.getImageData(0, 0, w, h).data;
+      const gray = new Uint8Array(w * h);
+      const rArr = new Uint8Array(w * h);
+      const gArr = new Uint8Array(w * h);
+      const bArr = new Uint8Array(w * h);
+
+      for (let i = 0; i < w * h; i++) {
+        const a = imgData[i * 4 + 3] / 255;
+        const r = Math.round(imgData[i * 4] * a + 255 * (1 - a));
+        const g = Math.round(imgData[i * 4 + 1] * a + 255 * (1 - a));
+        const b = Math.round(imgData[i * 4 + 2] * a + 255 * (1 - a));
+        rArr[i] = r;
+        gArr[i] = g;
+        bArr[i] = b;
+
+        const luma = 0.299 * r + 0.587 * g + 0.114 * b;
+        const minCh = Math.min(r, g, b);
+        gray[i] = Math.round(0.45 * luma + 0.55 * minCh);
+      }
+
+      return {
+        width: w,
+        height: h,
+        gray,
+        r: rArr,
+        g: gArr,
+        b: bArr,
+        sourceCanvas: off,
+        cachedThreshold: -1,
+        cachedAutoColor: null,
+        extracted: null,
+      };
+    }
+
+    function getActiveSourceMask() {
+      if (state.shapePreset === "image" && state.bitmapMask) return state.bitmapMask;
+      if (state.shapePreset === "barbed_wire") return getOrBuildBarbedWireMask();
+      return null;
+    }
+
+    function matchRgbToMadeiraHex(rVal, gVal, bVal) {
+      if (rVal < 78 && gVal < 78 && bVal < 85) return "#212529";
+      if (rVal - Math.max(gVal, bVal) > 40) return "#e62e2d";
+      let bestHex = MADEIRA_THREADS[0].hex;
+      let bestDist = Infinity;
+      for (const th of MADEIRA_THREADS) {
+        const tr = parseInt(th.hex.slice(1, 3), 16);
+        const tg = parseInt(th.hex.slice(3, 5), 16);
+        const tb = parseInt(th.hex.slice(5, 7), 16);
+        const d = (rVal - tr) ** 2 + (gVal - tg) ** 2 + (bVal - tb) ** 2;
+        if (d < bestDist) {
+          bestDist = d;
+          bestHex = th.hex;
+        }
+      }
+      return bestHex;
+    }
+
+    function computeChamferDistancePx(compMask, w, h, minX, maxX, minY, maxY) {
+      const dist = new Float32Array(w * h);
+      const INF = 1e6;
+      for (let y = Math.max(0, minY - 1); y <= Math.min(h - 1, maxY + 1); y++) {
+        for (let x = Math.max(0, minX - 1); x <= Math.min(w - 1, maxX + 1); x++) {
+          const idx = y * w + x;
+          dist[idx] = compMask[idx] ? INF : 0;
+        }
+      }
+      for (let y = Math.max(1, minY); y <= Math.min(h - 2, maxY); y++) {
+        for (let x = Math.max(1, minX); x <= Math.min(w - 2, maxX); x++) {
+          const idx = y * w + x;
+          if (!compMask[idx]) continue;
+          let d = dist[idx];
+          d = Math.min(d, dist[(y - 1) * w + x] + 1.0);
+          d = Math.min(d, dist[y * w + (x - 1)] + 1.0);
+          d = Math.min(d, dist[(y - 1) * w + (x - 1)] + 1.414);
+          d = Math.min(d, dist[(y - 1) * w + (x + 1)] + 1.414);
+          dist[idx] = d;
+        }
+      }
+      let maxRadiusPx = 0;
+      for (let y = Math.min(h - 2, maxY); y >= Math.max(1, minY); y--) {
+        for (let x = Math.min(w - 2, maxX); x >= Math.max(1, minX); x--) {
+          const idx = y * w + x;
+          if (!compMask[idx]) continue;
+          let d = dist[idx];
+          d = Math.min(d, dist[(y + 1) * w + x] + 1.0);
+          d = Math.min(d, dist[y * w + (x + 1)] + 1.0);
+          d = Math.min(d, dist[(y + 1) * w + (x + 1)] + 1.414);
+          d = Math.min(d, dist[(y + 1) * w + (x - 1)] + 1.414);
+          dist[idx] = d;
+          if (d > maxRadiusPx) maxRadiusPx = d;
+        }
+      }
+      return { dist, maxRadiusPx };
+    }
+
+    function extractMedialSkeletonChainsMm(compMask, distField, w, h, minX, maxX, minY, maxY, pxToMmX, pxToMmY, pxScaleMm) {
+      const skel = new Uint8Array(w * h);
+      for (let y = minY; y <= maxY; y++) {
+        for (let x = minX; x <= maxX; x++) {
+          const idx = y * w + x;
+          if (compMask[idx]) skel[idx] = 1;
+        }
+      }
+
+      const toClear = [];
+      let changed = true;
+      let iter = 0;
+      while (changed && iter++ < 45) {
+        changed = false;
+        for (let step = 0; step < 2; step++) {
+          toClear.length = 0;
+          for (let y = Math.max(1, minY); y <= Math.min(h - 2, maxY); y++) {
+            for (let x = Math.max(1, minX); x <= Math.min(w - 2, maxX); x++) {
+              const idx = y * w + x;
+              if (!skel[idx]) continue;
+              const p2 = skel[(y - 1) * w + x];
+              const p3 = skel[(y - 1) * w + (x + 1)];
+              const p4 = skel[y * w + (x + 1)];
+              const p5 = skel[(y + 1) * w + (x + 1)];
+              const p6 = skel[(y + 1) * w + x];
+              const p7 = skel[(y + 1) * w + (x - 1)];
+              const p8 = skel[y * w + (x - 1)];
+              const p9 = skel[(y - 1) * w + (x - 1)];
+
+              const B = p2 + p3 + p4 + p5 + p6 + p7 + p8 + p9;
+              if (B < 2 || B > 6) continue;
+              const A =
+                (p2 === 0 && p3 === 1 ? 1 : 0) +
+                (p3 === 0 && p4 === 1 ? 1 : 0) +
+                (p4 === 0 && p5 === 1 ? 1 : 0) +
+                (p5 === 0 && p6 === 1 ? 1 : 0) +
+                (p6 === 0 && p7 === 1 ? 1 : 0) +
+                (p7 === 0 && p8 === 1 ? 1 : 0) +
+                (p8 === 0 && p9 === 1 ? 1 : 0) +
+                (p9 === 0 && p2 === 1 ? 1 : 0);
+              if (A !== 1) continue;
+
+              if (step === 0) {
+                if (p2 * p4 * p6 !== 0 || p4 * p6 * p8 !== 0) continue;
+              } else {
+                if (p2 * p4 * p8 !== 0 || p2 * p6 * p8 !== 0) continue;
+              }
+              toClear.push(idx);
+            }
+          }
+          if (toClear.length > 0) {
+            changed = true;
+            for (let i = 0; i < toClear.length; i++) skel[toClear[i]] = 0;
+          }
+        }
+      }
+
+      const skelPixels = [];
+      const degree = new Uint8Array(w * h);
+      for (let y = Math.max(1, minY); y <= Math.min(h - 2, maxY); y++) {
+        for (let x = Math.max(1, minX); x <= Math.min(w - 2, maxX); x++) {
+          const idx = y * w + x;
+          if (!skel[idx]) continue;
+          skelPixels.push(idx);
+          let deg = 0;
+          for (let dy = -1; dy <= 1; dy++) {
+            for (let dx = -1; dx <= 1; dx++) {
+              if (dx === 0 && dy === 0) continue;
+              if (skel[(y + dy) * w + (x + dx)]) deg++;
+            }
+          }
+          degree[idx] = deg;
+        }
+      }
+
+      if (skelPixels.length < 3) return [];
+
+      skelPixels.sort((a, b) => {
+        const da = degree[a] === 1 ? 0 : (degree[a] >= 3 ? 1 : 2);
+        const db = degree[b] === 1 ? 0 : (degree[b] >= 3 ? 1 : 2);
+        return da - db;
+      });
+
+      const visited = new Uint8Array(w * h);
+      const chainsMm = [];
+      const dirs = [
+        [-1, 0], [1, 0], [0, -1], [0, 1],
+        [-1, -1], [1, -1], [-1, 1], [1, 1]
+      ];
+
+      for (const startIdx of skelPixels) {
+        if (visited[startIdx]) continue;
+        const rawChain = [];
+        let curr = startIdx;
+        while (curr !== -1) {
+          visited[curr] = 1;
+          const cy = Math.floor(curr / w);
+          const cx = curr - cy * w;
+          const radiusMm = Math.max(0.45, distField[curr] * pxScaleMm);
+          rawChain.push({
+            x: pxToMmX(cx + 0.5),
+            y: pxToMmY(cy + 0.5),
+            widthMm: Math.min(8.5, Math.max(0.9, radiusMm * 2.15)),
+            pxIdx: curr
+          });
+
+          let nextNode = -1;
+          for (const [dx, dy] of dirs) {
+            const nx = cx + dx, ny = cy + dy;
+            if (nx < minX || nx > maxX || ny < minY || ny > maxY) continue;
+            const nIdx = ny * w + nx;
+            if (skel[nIdx] && !visited[nIdx]) {
+              nextNode = nIdx;
+              break;
+            }
+          }
+          curr = nextNode;
+        }
+
+        if (rawChain.length >= 3) {
+          const smoothed = [];
+          for (let i = 0; i < rawChain.length; i++) {
+            const p0 = rawChain[Math.max(0, i - 1)];
+            const p1 = rawChain[i];
+            const p2 = rawChain[Math.min(rawChain.length - 1, i + 1)];
+            smoothed.push({
+              x: 0.25 * p0.x + 0.5 * p1.x + 0.25 * p2.x,
+              y: 0.25 * p0.y + 0.5 * p1.y + 0.25 * p2.y,
+              widthMm: 0.25 * p0.widthMm + 0.5 * p1.widthMm + 0.25 * p2.widthMm,
+            });
+          }
+          chainsMm.push(smoothed);
+        }
+      }
+      return chainsMm;
+    }
+
     function extractBitmapComponents(mask, threshold) {
       const { width, height, gray, r, g, b } = mask;
       const spanMm = 110;
+      const pxScaleMm = spanMm / width;
       const pxToMmX = (px) => (px / width) * spanMm - spanMm / 2;
       const pxToMmY = (py) => (py / height) * spanMm - spanMm / 2;
       const mmToPxX = (x) => ((x + spanMm / 2) / spanMm) * width;
@@ -585,6 +926,7 @@
         rawBin[i] = gray[i] < threshold ? 1 : 0;
       }
       const bin = new Uint8Array(width * height);
+      const pixelColorHex = new Array(width * height);
       for (let y = 1; y < height - 1; y++) {
         for (let x = 1; x < width - 1; x++) {
           const idx = y * width + x;
@@ -594,15 +936,24 @@
               n += rawBin[(y + dy) * width + (x + dx)];
             }
           }
-          bin[idx] = (rawBin[idx] && n >= 2) || n >= 7 ? 1 : 0;
+          const isFg = (rawBin[idx] && n >= 2) || n >= 7 ? 1 : 0;
+          bin[idx] = isFg;
+          if (isFg) {
+            if (state.autoColor && r && g && b) {
+              pixelColorHex[idx] = matchRgbToMadeiraHex(r[idx], g[idx], b[idx]);
+            } else {
+              pixelColorHex[idx] = state.threadColor;
+            }
+          }
         }
       }
 
       const labels = new Int32Array(width * height);
       const components = [];
       let currentLabel = 0;
-      const minPixels = Math.max(12, Math.round(width * height * 0.0001));
+      const minPixels = Math.max(10, Math.round(width * height * 0.00008));
       const queue = new Int32Array(width * height);
+      const compMaskScratch = new Uint8Array(width * height);
 
       for (let y = 1; y < height - 1; y++) {
         for (let x = 1; x < width - 1; x++) {
@@ -610,12 +961,12 @@
           if (!bin[startIdx] || labels[startIdx] !== 0) continue;
 
           currentLabel++;
+          const targetColorHex = pixelColorHex[startIdx];
           let qHead = 0, qTail = 0;
           queue[qTail++] = startIdx;
           labels[startIdx] = currentLabel;
 
           let minX = x, maxX = x, minY = y, maxY = y;
-          let sumR = 0, sumG = 0, sumB = 0;
           const pixels = [];
 
           while (qHead < qTail) {
@@ -628,11 +979,6 @@
             if (cx > maxX) maxX = cx;
             if (cy < minY) minY = cy;
             if (cy > maxY) maxY = cy;
-            if (r && g && b) {
-              sumR += r[curr];
-              sumG += g[curr];
-              sumB += b[curr];
-            }
 
             for (let dy = -1; dy <= 1; dy++) {
               const ny = cy + dy;
@@ -641,7 +987,7 @@
                 const nx = cx + dx;
                 if (nx <= 0 || nx >= width - 1) continue;
                 const nIdx = ny * width + nx;
-                if (bin[nIdx] && labels[nIdx] === 0) {
+                if (bin[nIdx] && labels[nIdx] === 0 && pixelColorHex[nIdx] === targetColorHex) {
                   labels[nIdx] = currentLabel;
                   queue[qTail++] = nIdx;
                 }
@@ -654,32 +1000,23 @@
             continue;
           }
 
-          let matchedHex = state.threadColor;
-          if (r && g && b && pixels.length > 0) {
-            const avgR = sumR / pixels.length;
-            const avgG = sumG / pixels.length;
-            const avgB = sumB / pixels.length;
-            if (avgR - Math.max(avgG, avgB) > 35) {
-              matchedHex = "#e63946";
-            } else if (avgR < 95 && avgG < 95 && avgB < 95) {
-              matchedHex = "#222222";
-            } else {
-              let bestDist = Infinity;
-              for (const th of MADEIRA_THREADS) {
-                const tr = parseInt(th.hex.slice(1, 3), 16);
-                const tg = parseInt(th.hex.slice(3, 5), 16);
-                const tb = parseInt(th.hex.slice(5, 7), 16);
-                const d = (avgR - tr) ** 2 + (avgG - tg) ** 2 + (avgB - tb) ** 2;
-                if (d < bestDist) {
-                  bestDist = d;
-                  matchedHex = th.hex;
-                }
-              }
-            }
-          }
-
           const compId = currentLabel;
+          for (let i = 0; i < pixels.length; i++) compMaskScratch[pixels[i]] = 1;
+
+          const { dist: distField, maxRadiusPx } = computeChamferDistancePx(
+            compMaskScratch, width, height, minX, maxX, minY, maxY
+          );
+          const maxStrokeWidthMm = maxRadiusPx * 2.0 * pxScaleMm;
+          const bboxSpanMm = Math.hypot((maxX - minX) * pxScaleMm, (maxY - minY) * pxScaleMm);
+          const isThinStroke = maxRadiusPx <= 8.5 || (bboxSpanMm / Math.max(0.6, maxStrokeWidthMm) >= 3.2 && maxRadiusPx <= 13.5);
+          const skeletonChainsMm = extractMedialSkeletonChainsMm(
+            compMaskScratch, distField, width, height, minX, maxX, minY, maxY, pxToMmX, pxToMmY, pxScaleMm
+          );
+
+          for (let i = 0; i < pixels.length; i++) compMaskScratch[pixels[i]] = 0;
+
           const contoursMm = traceComponentContoursMm(labels, width, height, compId, minX, maxX, minY, maxY, pxToMmX, pxToMmY);
+          const isDarkOutline = targetColorHex === "#212529";
 
           components.push({
             id: compId,
@@ -690,7 +1027,11 @@
             maxYMm: pxToMmY(maxY + 1),
             cxMm: pxToMmX((minX + maxX) * 0.5),
             cyMm: pxToMmY((minY + maxY) * 0.5),
-            colorHex: matchedHex,
+            colorHex: targetColorHex,
+            isDarkOutline,
+            isThinStroke,
+            maxStrokeWidthMm,
+            skeletonChainsMm,
             contoursMm,
             containsMm(xMm, yMm) {
               const ix = Math.floor(mmToPxX(xMm));
@@ -701,6 +1042,12 @@
           });
         }
       }
+
+      components.sort((a, b) => {
+        if (a.isDarkOutline !== b.isDarkOutline) return a.isDarkOutline ? 1 : -1;
+        if (a.colorHex !== b.colorHex) return a.colorHex.localeCompare(b.colorHex);
+        return a.minXMm - b.minXMm;
+      });
 
       return { labels, components };
     }
@@ -892,27 +1239,239 @@
       return out;
     }
 
-    function getActiveBitmapComponents() {
-      if (state.shapePreset !== "image" || !state.bitmapMask) return null;
-      if (state.bitmapMask.cachedThreshold !== state.threshold || !state.bitmapMask.extracted) {
-        state.bitmapMask.extracted = extractBitmapComponents(state.bitmapMask, state.threshold);
-        state.bitmapMask.cachedThreshold = state.threshold;
+    function optimizeStitchBlocksByColorLayersMm(blocks) {
+      const valid = blocks.filter((b) => b && b.length > 0);
+      if (valid.length <= 1) return valid;
+
+      const layerMap = new Map();
+      for (const blk of valid) {
+        const col = blk[0].color || state.threadColor;
+        let list = layerMap.get(col);
+        if (!list) {
+          list = [];
+          layerMap.set(col, list);
+        }
+        list.push(blk);
       }
-      return state.bitmapMask.extracted.components;
+
+      const layerKeys = Array.from(layerMap.keys()).sort((a, b) => {
+        const aDark = a === "#212529" || a === "#222222";
+        const bDark = b === "#212529" || b === "#222222";
+        if (aDark !== bDark) return aDark ? 1 : -1;
+        return a.localeCompare(b);
+      });
+
+      const finalOrdered = [];
+      for (const key of layerKeys) {
+        const groupOrdered = optimizeStitchBlocksMm(layerMap.get(key));
+        finalOrdered.push(...groupOrdered);
+      }
+      return finalOrdered;
+    }
+
+    function resampleOpenSpineMm(chain, stepMm) {
+      if (!chain || chain.length < 2) return [];
+      const spacing = Math.max(0.32, stepMm);
+      const out = [{
+        x: chain[0].x !== undefined ? chain[0].x : chain[0][0],
+        y: chain[0].y !== undefined ? chain[0].y : chain[0][1],
+        widthMm: chain[0].widthMm !== undefined ? chain[0].widthMm : 2.2,
+      }];
+      let acc = 0;
+
+      for (let i = 1; i < chain.length; i++) {
+        const p0x = chain[i - 1].x !== undefined ? chain[i - 1].x : chain[i - 1][0];
+        const p0y = chain[i - 1].y !== undefined ? chain[i - 1].y : chain[i - 1][1];
+        const p0w = chain[i - 1].widthMm !== undefined ? chain[i - 1].widthMm : 2.2;
+        const p1x = chain[i].x !== undefined ? chain[i].x : chain[i][0];
+        const p1y = chain[i].y !== undefined ? chain[i].y : chain[i][1];
+        const p1w = chain[i].widthMm !== undefined ? chain[i].widthMm : 2.2;
+
+        const dx = p1x - p0x;
+        const dy = p1y - p0y;
+        const segLen = Math.hypot(dx, dy);
+        if (segLen < 1e-5) continue;
+
+        let distAlong = spacing - acc;
+        while (distAlong <= segLen) {
+          const t = distAlong / segLen;
+          out.push({
+            x: p0x + dx * t,
+            y: p0y + dy * t,
+            widthMm: p0w + (p1w - p0w) * t,
+          });
+          distAlong += spacing;
+        }
+        acc = segLen - (distAlong - spacing);
+      }
+
+      const last = chain[chain.length - 1];
+      const lx = last.x !== undefined ? last.x : last[0];
+      const ly = last.y !== undefined ? last.y : last[1];
+      const lw = last.widthMm !== undefined ? last.widthMm : 2.2;
+      if (Math.hypot(lx - out[out.length - 1].x, ly - out[out.length - 1].y) > 0.15) {
+        out.push({ x: lx, y: ly, widthMm: lw });
+      }
+      return out;
+    }
+
+    function generateSatinColumnFromSpineMm(spineChain, spacingMm, colorHex, includeUnderpath = true) {
+      const step = Math.max(0.35, Math.min(1.1, spacingMm * 0.72));
+      const nodes = resampleOpenSpineMm(spineChain, step);
+      if (nodes.length < 2) return [];
+
+      const out = [];
+      if (includeUnderpath && nodes.length >= 3) {
+        const underStep = Math.max(1, Math.round(1.8 / step));
+        for (let i = 0; i < nodes.length; i += underStep) {
+          out.push({ x: nodes[i].x, y: nodes[i].y, color: colorHex, underpath: true });
+        }
+        const endNode = nodes[nodes.length - 1];
+        out.push({ x: endNode.x, y: endNode.y, color: colorHex, underpath: true });
+        nodes.reverse();
+      }
+
+      const n = nodes.length;
+      for (let i = 0; i < n; i++) {
+        const prev = nodes[Math.max(0, i - 1)];
+        const next = nodes[Math.min(n - 1, i + 1)];
+        const tx = next.x - prev.x;
+        const ty = next.y - prev.y;
+        const len = Math.hypot(tx, ty) || 1;
+        const nx = -ty / len;
+        const ny = tx / len;
+
+        const edgeFade = n >= 5 ? Math.min(1.0, Math.min(i, n - 1 - i) / 2.5 + 0.28) : 0.85;
+        const halfW = Math.max(0.35, nodes[i].widthMm * 0.5 * edgeFade);
+
+        out.push({ x: nodes[i].x + nx * halfW, y: nodes[i].y + ny * halfW, color: colorHex });
+        out.push({ x: nodes[i].x - nx * halfW, y: nodes[i].y - ny * halfW, color: colorHex });
+      }
+      return out;
+    }
+
+    function sequenceComponentBranchesMm(branchBlocks, comp, colorHex) {
+      const ordered = optimizeStitchBlocksMm(branchBlocks);
+      if (ordered.length <= 1) return ordered[0] || [];
+
+      const merged = [];
+      const maxWalkDist = Math.min(8.5, state.jumpThresholdMm * 1.35);
+
+      for (let i = 0; i < ordered.length; i++) {
+        const blk = ordered[i];
+        if (!blk || !blk.length) continue;
+
+        if (merged.length > 0) {
+          const prev = merged[merged.length - 1];
+          const next = blk[0];
+          const gap = Math.hypot(next.x - prev.x, next.y - prev.y);
+
+          if (gap > state.jumpThresholdMm) {
+            let staysInside = false;
+            if (comp && comp.containsMm && gap <= maxWalkDist) {
+              staysInside = true;
+              const checks = Math.max(3, Math.ceil(gap / 0.8));
+              for (let c = 1; c < checks; c++) {
+                const t = c / checks;
+                if (!comp.containsMm(prev.x + (next.x - prev.x) * t, prev.y + (next.y - prev.y) * t)) {
+                  staysInside = false;
+                  break;
+                }
+              }
+            }
+
+            if (staysInside) {
+              const steps = Math.ceil(gap / 2.0);
+              for (let s = 1; s < steps; s++) {
+                const t = s / steps;
+                merged.push({
+                  x: prev.x + (next.x - prev.x) * t,
+                  y: prev.y + (next.y - prev.y) * t,
+                  color: colorHex,
+                  underpath: true,
+                });
+              }
+            } else {
+              blk[0].jump = true;
+              blk[0].trim = true;
+            }
+          }
+        }
+        merged.push(...blk);
+      }
+      return merged;
+    }
+
+    function getActiveBitmapComponents() {
+      const mask = getActiveSourceMask();
+      if (!mask) return null;
+      if (
+        mask.cachedThreshold !== state.threshold ||
+        mask.cachedAutoColor !== state.autoColor ||
+        !mask.extracted
+      ) {
+        mask.extracted = extractBitmapComponents(mask, state.threshold);
+        mask.cachedThreshold = state.threshold;
+        mask.cachedAutoColor = state.autoColor;
+      }
+      return mask.extracted.components;
+    }
+
+    function generateMedialSatinColumnsMm(poly, spacingMm) {
+      const comps = getActiveBitmapComponents();
+      if (comps && comps.length) {
+        const compBlocks = [];
+        for (const comp of comps) {
+          const col = state.autoColor ? comp.colorHex : state.threadColor;
+          const branchBlocks = [];
+          if (comp.skeletonChainsMm && comp.skeletonChainsMm.length) {
+            for (const chain of comp.skeletonChainsMm) {
+              const pts = generateSatinColumnFromSpineMm(chain, spacingMm, col, true);
+              if (pts.length > 1) branchBlocks.push(pts);
+            }
+          } else {
+            for (const loop of comp.contoursMm) {
+              const pts = sampleClosedRing(loop, Math.max(0.5, spacingMm), col);
+              if (pts.length > 1) branchBlocks.push(pts);
+            }
+          }
+          const seq = sequenceComponentBranchesMm(branchBlocks, comp, col);
+          if (seq.length > 0) compBlocks.push(seq);
+        }
+        return optimizeStitchBlocksByColorLayersMm(compBlocks).flat();
+      }
+      return generateSatinBorderMm(poly, spacingMm);
     }
 
     function generateRunningStitchMm(poly, stitchLenMm) {
       const comps = getActiveBitmapComponents();
       if (comps && comps.length) {
-        const blocks = [];
+        const compBlocks = [];
         for (const comp of comps) {
           const col = state.autoColor ? comp.colorHex : state.threadColor;
-          for (const loop of comp.contoursMm) {
-            const pts = sampleClosedRing(loop, Math.min(2.2, stitchLenMm), col);
-            if (pts.length > 1) blocks.push(pts);
+          const branchBlocks = [];
+          if (state.autoSatinSkeleton && comp.isThinStroke && comp.skeletonChainsMm && comp.skeletonChainsMm.length) {
+            for (const chain of comp.skeletonChainsMm) {
+              const forward = resampleOpenSpineMm(chain, Math.min(2.2, stitchLenMm)).map((p) => ({
+                x: p.x,
+                y: p.y,
+                color: col,
+              }));
+              if (forward.length > 1) {
+                const back = forward.slice(0, -1).reverse().map((p) => ({ x: p.x, y: p.y, color: col }));
+                branchBlocks.push([...forward, ...back]);
+              }
+            }
+          } else {
+            for (const loop of comp.contoursMm) {
+              const pts = sampleClosedRing(loop, Math.min(2.2, stitchLenMm), col);
+              if (pts.length > 1) branchBlocks.push(pts);
+            }
           }
+          const seq = sequenceComponentBranchesMm(branchBlocks, comp, col);
+          if (seq.length > 0) compBlocks.push(seq);
         }
-        return optimizeStitchBlocksMm(blocks).flat();
+        return optimizeStitchBlocksByColorLayersMm(compBlocks).flat();
       }
       return sampleClosedRing(poly, stitchLenMm, state.threadColor);
     }
@@ -938,15 +1497,28 @@
 
       const comps = getActiveBitmapComponents();
       if (comps && comps.length) {
-        const blocks = [];
+        const compBlocks = [];
         for (const comp of comps) {
           const col = state.autoColor ? comp.colorHex : state.threadColor;
-          for (const loop of comp.contoursMm) {
-            const pts = buildSatinForRing(loop, 1.5, col);
-            if (pts.length > 1) blocks.push(pts);
+          if (state.autoSatinSkeleton && comp.isThinStroke && comp.skeletonChainsMm && comp.skeletonChainsMm.length) {
+            const branchBlocks = [];
+            for (const chain of comp.skeletonChainsMm) {
+              const pts = generateSatinColumnFromSpineMm(chain, spacingMm, col, true);
+              if (pts.length > 1) branchBlocks.push(pts);
+            }
+            const seq = sequenceComponentBranchesMm(branchBlocks, comp, col);
+            if (seq.length > 0) compBlocks.push(seq);
+          } else {
+            const loopBlocks = [];
+            for (const loop of comp.contoursMm) {
+              const pts = buildSatinForRing(loop, 1.5, col);
+              if (pts.length > 1) loopBlocks.push(pts);
+            }
+            const seq = sequenceComponentBranchesMm(loopBlocks, comp, col);
+            if (seq.length > 0) compBlocks.push(seq);
           }
         }
-        return optimizeStitchBlocksMm(blocks).flat();
+        return optimizeStitchBlocksByColorLayersMm(compBlocks).flat();
       }
       return buildSatinForRing(poly, 3.2, state.threadColor);
     }
@@ -957,6 +1529,16 @@
         const blocks = [];
         for (const comp of comps) {
           const col = state.autoColor ? comp.colorHex : state.threadColor;
+          if (state.autoSatinSkeleton && comp.isThinStroke && comp.skeletonChainsMm && comp.skeletonChainsMm.length) {
+            const branchBlocks = [];
+            for (const chain of comp.skeletonChainsMm) {
+              const pts = generateSatinColumnFromSpineMm(chain, rowSpacingMm, col, true);
+              if (pts.length > 1) branchBlocks.push(pts);
+            }
+            const seq = sequenceComponentBranchesMm(branchBlocks, comp, col);
+            if (seq.length > 0) blocks.push(seq);
+            continue;
+          }
           const compPts = [];
           const span = Math.max(4, Math.hypot(comp.maxXMm - comp.minXMm, comp.maxYMm - comp.minYMm) * 0.5);
           const stepScale = Math.max(0.06, rowSpacingMm / span);
@@ -971,7 +1553,7 @@
           }
           if (compPts.length) blocks.push(compPts);
         }
-        return optimizeStitchBlocksMm(blocks).flat();
+        return optimizeStitchBlocksByColorLayersMm(blocks).flat();
       }
 
       const out = [];
@@ -990,6 +1572,20 @@
         const componentBlocks = [];
         for (const comp of comps) {
           const col = state.autoColor ? comp.colorHex : state.threadColor;
+
+          // Hybrid Auto-Digitize: Narrow strokes (barbed wire strands, coils, sharp spikes, outlines)
+          // are converted into Medial-Axis Satin Columns instead of parallel Tatami scanline scribbles!
+          if (state.autoSatinSkeleton && comp.isThinStroke && comp.skeletonChainsMm && comp.skeletonChainsMm.length) {
+            const branchBlocks = [];
+            for (const chain of comp.skeletonChainsMm) {
+              const pts = generateSatinColumnFromSpineMm(chain, rowSpacingMm, col, true);
+              if (pts.length > 1) branchBlocks.push(pts);
+            }
+            const seq = sequenceComponentBranchesMm(branchBlocks, comp, col);
+            if (seq.length > 0) componentBlocks.push(seq);
+            continue;
+          }
+
           const boundsMm = {
             minX: comp.minXMm,
             maxX: comp.maxXMm,
@@ -1008,36 +1604,14 @@
             const contourStep = Math.min(1.8, stitchLenMm * 0.65);
             const contourBlocks = comp.contoursMm.map((loop) => sampleClosedRing(loop, contourStep, col));
             const allParts = fillPts.length ? [fillPts, ...contourBlocks] : contourBlocks;
-            const orderedParts = optimizeStitchBlocksMm(allParts);
-            const mergedComp = [];
-            for (let pIdx = 0; pIdx < orderedParts.length; pIdx++) {
-              const part = orderedParts[pIdx];
-              if (pIdx > 0 && mergedComp.length > 0 && part.length > 0) {
-                const prev = mergedComp[mergedComp.length - 1];
-                const next = part[0];
-                const gap = Math.hypot(next.x - prev.x, next.y - prev.y);
-                if (gap > 2.8 && gap <= 16.0) {
-                  const steps = Math.ceil(gap / 2.4);
-                  for (let s = 1; s < steps; s++) {
-                    const t = s / steps;
-                    mergedComp.push({
-                      x: prev.x + (next.x - prev.x) * t,
-                      y: prev.y + (next.y - prev.y) * t,
-                      color: col,
-                      underpath: true,
-                    });
-                  }
-                }
-              }
-              mergedComp.push(...part);
-            }
+            const mergedComp = sequenceComponentBranchesMm(allParts, comp, col);
             if (mergedComp.length > 0) componentBlocks.push(mergedComp);
           } else if (fillPts.length > 0) {
             componentBlocks.push(fillPts);
           }
         }
 
-        const orderedBlocks = optimizeStitchBlocksMm(componentBlocks);
+        const orderedBlocks = optimizeStitchBlocksByColorLayersMm(componentBlocks);
         return orderedBlocks.flat();
       }
 
@@ -1067,15 +1641,16 @@
       const bound = 42;
       const rowStep = Math.max(1.2, rowSpacingMm * 2.2);
       let rowIndex = 0;
+      const mask = getActiveSourceMask();
 
       for (let y = -bound; y <= bound; y += rowStep) {
         const rowPts = [];
         for (let x = -bound; x <= bound; x += stitchLenMm * 0.45) {
           let darkness = 0.65;
-          if (state.bitmapMask) {
-            const { width, height, gray } = state.bitmapMask;
-            const u = Math.floor(((x + 40) / 80) * width);
-            const v = Math.floor(((y + 40) / 80) * height);
+          if (mask) {
+            const { width, height, gray } = mask;
+            const u = Math.floor(((x + 55) / 110) * width);
+            const v = Math.floor(((y + 55) / 110) * height);
             if (u >= 0 && u < width && v >= 0 && v < height) {
               darkness = 1.0 - gray[v * width + u] / 255.0;
             } else {
@@ -1087,8 +1662,8 @@
 
           if (darkness > 0.12) {
             const amp = darkness * rowStep * 0.55;
-            rowPts.push({ x, y: y - amp });
-            rowPts.push({ x: x + stitchLenMm * 0.22, y: y + amp });
+            rowPts.push({ x, y: y - amp, color: state.threadColor });
+            rowPts.push({ x: x + stitchLenMm * 0.22, y: y + amp, color: state.threadColor });
           }
         }
         if (rowIndex % 2 === 1) rowPts.reverse();
@@ -1098,12 +1673,70 @@
       return out;
     }
 
+    function generateManualObjectsStitchesMm() {
+      if (!state.manualObjects || !state.manualObjects.length) return [];
+      const blocks = [];
+      for (const obj of state.manualObjects) {
+        const col = obj.color || state.threadColor;
+        if (obj.type === "satin_spine" && obj.pointsMm && obj.pointsMm.length >= 2) {
+          const widthMm = obj.widthMm || 2.8;
+          const spineChain = obj.pointsMm.map(([x, y]) => ({ x, y, widthMm }));
+          const pts = generateSatinColumnFromSpineMm(spineChain, state.rowSpacingMm, col, true);
+          if (pts.length > 0) {
+            pts[0].jump = true;
+            pts[0].trim = true;
+            blocks.push(pts);
+          }
+        } else if (obj.type === "fill_region" && obj.pointsMm && obj.pointsMm.length >= 3) {
+          const poly = obj.pointsMm;
+          let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+          for (const [px, py] of poly) {
+            if (px < minX) minX = px;
+            if (px > maxX) maxX = px;
+            if (py < minY) minY = py;
+            if (py > maxY) maxY = py;
+          }
+          let pts = [];
+          if (state.stitchMode === "concentric") {
+            const cx = (minX + maxX) * 0.5;
+            const cy = (minY + maxY) * 0.5;
+            const span = Math.max(4, Math.hypot(maxX - minX, maxY - minY) * 0.5);
+            const stepScale = Math.max(0.06, state.rowSpacingMm / span);
+            for (let scale = 1.0; scale >= 0.12; scale -= stepScale) {
+              const scaledLoop = poly.map(([x, y]) => [cx + (x - cx) * scale, cy + (y - cy) * scale]);
+              pts.push(...sampleClosedRing(scaledLoop, Math.min(2.2, state.stitchLengthMm), col));
+            }
+          } else {
+            pts = fillSingleDomainTatamiMm(
+              (wx, wy) => pointInPolygon(wx, wy, poly),
+              { minX, maxX, minY, maxY },
+              state.stitchLengthMm,
+              state.rowSpacingMm,
+              state.angleDeg,
+              col
+            );
+            if (state.contourLock) {
+              pts.push(...sampleClosedRing(poly, Math.min(2.0, state.stitchLengthMm * 0.7), col));
+            }
+          }
+          if (pts.length > 0) {
+            pts[0].jump = true;
+            pts[0].trim = true;
+            blocks.push(pts);
+          }
+        }
+      }
+      return blocks.flat();
+    }
+
     function regenerateDesign() {
       const poly = getPresetPolygonMm(state.shapePreset);
       let raw = [];
 
       if (state.stitchMode === "tatami") {
         raw = generateTatamiFillMm(poly, state.stitchLengthMm, state.rowSpacingMm, state.angleDeg);
+      } else if (state.stitchMode === "satin_column") {
+        raw = generateMedialSatinColumnsMm(poly, state.rowSpacingMm);
       } else if (state.stitchMode === "concentric") {
         raw = generateConcentricFillMm(poly, state.stitchLengthMm, state.rowSpacingMm);
       } else if (state.stitchMode === "satin_border") {
@@ -1114,9 +1747,22 @@
         raw = generatePhotoStitchMm(poly, state.stitchLengthMm, state.rowSpacingMm);
       }
 
-      for (let i = 1; i < raw.length; i++) {
-        const dist = Math.hypot(raw[i].x - raw[i - 1].x, raw[i].y - raw[i - 1].y);
-        raw[i].jump = dist > 7.0;
+      const manualStitches = generateManualObjectsStitchesMm();
+      if (manualStitches.length > 0) {
+        raw = raw.concat(manualStitches);
+      }
+
+      for (let i = 0; i < raw.length; i++) {
+        if (i === 0) {
+          raw[i].jump = false;
+          raw[i].trim = false;
+        } else {
+          const dist = Math.hypot(raw[i].x - raw[i - 1].x, raw[i].y - raw[i - 1].y);
+          const colorChanged = Boolean(state.autoColor && raw[i].color && raw[i - 1].color && raw[i].color !== raw[i - 1].color);
+          const isJump = Boolean(raw[i].jump) || dist > state.jumpThresholdMm || colorChanged;
+          raw[i].jump = isJump;
+          raw[i].trim = Boolean(raw[i].trim) || dist > state.jumpThresholdMm * 1.4 || colorChanged;
+        }
       }
 
       state.stitches = raw;
@@ -1204,6 +1850,36 @@
         ctx.strokeStyle = "#8c939e";
         ctx.lineWidth = 2;
         ctx.strokeRect(hx0, hy0, hx1 - hx0, hy1 - hy0);
+      }
+
+      // 0. Render Reference Image / Artwork Underlay locked to 0.1 mm Machine Scale coordinate space (-55..+55 mm)
+      if (state.showUnderlay && state.underlayOpacity > 0.01) {
+        const mask = getActiveSourceMask();
+        ctx.save();
+        ctx.globalAlpha = state.underlayOpacity;
+        if (mask && mask.sourceCanvas) {
+          const [ux0, uy0] = mmToScreen(-55, -55);
+          const [ux1, uy1] = mmToScreen(55, 55);
+          ctx.drawImage(mask.sourceCanvas, ux0, uy0, ux1 - ux0, uy1 - uy0);
+        } else {
+          // Render reference vector shape underlay for geometric presets
+          const refPoly = getPresetPolygonMm(state.shapePreset);
+          if (refPoly && refPoly.length >= 3) {
+            ctx.fillStyle = "rgba(30, 144, 255, 0.25)";
+            ctx.strokeStyle = "rgba(30, 144, 255, 0.7)";
+            ctx.lineWidth = 1.5;
+            ctx.beginPath();
+            for (let i = 0; i < refPoly.length; i++) {
+              const [sx, sy] = mmToScreen(refPoly[i][0], refPoly[i][1]);
+              if (i === 0) ctx.moveTo(sx, sy);
+              else ctx.lineTo(sx, sy);
+            }
+            ctx.closePath();
+            ctx.fill();
+            ctx.stroke();
+          }
+        }
+        ctx.restore();
       }
 
       const pts = state.stitches;
@@ -1324,6 +2000,104 @@
       ctx.arc(lx, ly, 5, 0, Math.PI * 2);
       ctx.stroke();
 
+      // 5. Render Density & Puckering Heatmap Overlay (2.0 x 2.0 mm physical grid cells)
+      if (state.showHeatmap && count >= 2) {
+        const cellMm = 2.0;
+        const gridMap = new Map();
+        for (let i = 0; i < count; i++) {
+          const gx = Math.floor(pts[i].x / cellMm);
+          const gy = Math.floor(pts[i].y / cellMm);
+          const key = `${gx},${gy}`;
+          gridMap.set(key, (gridMap.get(key) || 0) + 1);
+        }
+        ctx.save();
+        for (const [key, cellCount] of gridMap.entries()) {
+          if (cellCount < 3) continue;
+          const [gxStr, gyStr] = key.split(",");
+          const gx = parseInt(gxStr, 10);
+          const gy = parseInt(gyStr, 10);
+          const [sx0, sy0] = mmToScreen(gx * cellMm, gy * cellMm);
+          const [sx1, sy1] = mmToScreen((gx + 1) * cellMm, (gy + 1) * cellMm);
+
+          let fillCol = "rgba(46, 204, 113, 0.25)";
+          let strokeCol = null;
+          if (cellCount >= 11) {
+            fillCol = "rgba(255, 25, 45, 0.56)";
+            strokeCol = "rgba(255, 255, 255, 0.85)";
+          } else if (cellCount >= 7) {
+            fillCol = "rgba(255, 140, 0, 0.45)";
+            strokeCol = "rgba(255, 180, 0, 0.7)";
+          } else if (cellCount >= 4) {
+            fillCol = "rgba(255, 214, 10, 0.34)";
+          }
+          ctx.fillStyle = fillCol;
+          ctx.fillRect(sx0, sy0, sx1 - sx0, sy1 - sy0);
+          if (strokeCol) {
+            ctx.strokeStyle = strokeCol;
+            ctx.lineWidth = 1.0;
+            ctx.strokeRect(sx0, sy0, sx1 - sx0, sy1 - sy0);
+          }
+        }
+        ctx.restore();
+      }
+
+      // 6. Render Manual Satin Spine / Fill Region Vector Overlays & Active Drawing Preview
+      if (state.manualObjects.length > 0 || state.activeDraftPtsMm.length > 0) {
+        ctx.save();
+        // Committed manual vector outlines (subtle dashed guide in edit/draw mode)
+        if (state.drawTool || state.editMode) {
+          for (const obj of state.manualObjects) {
+            if (!obj.pointsMm || obj.pointsMm.length < 2) continue;
+            ctx.strokeStyle = "rgba(30, 144, 255, 0.65)";
+            ctx.lineWidth = 1.5;
+            ctx.setLineDash([3, 3]);
+            ctx.beginPath();
+            for (let i = 0; i < obj.pointsMm.length; i++) {
+              const [sx, sy] = mmToScreen(obj.pointsMm[i][0], obj.pointsMm[i][1]);
+              if (i === 0) ctx.moveTo(sx, sy);
+              else ctx.lineTo(sx, sy);
+            }
+            if (obj.type === "fill_region") ctx.closePath();
+            ctx.stroke();
+          }
+        }
+
+        // Active in-progress vector drawing tool preview
+        if (state.drawTool && state.activeDraftPtsMm.length > 0) {
+          const draft = state.activeDraftPtsMm;
+          ctx.setLineDash([]);
+          ctx.strokeStyle = "#00e5ff";
+          ctx.fillStyle = "rgba(0, 229, 255, 0.16)";
+          ctx.lineWidth = 2.2;
+          ctx.beginPath();
+          for (let i = 0; i < draft.length; i++) {
+            const [sx, sy] = mmToScreen(draft[i][0], draft[i][1]);
+            if (i === 0) ctx.moveTo(sx, sy);
+            else ctx.lineTo(sx, sy);
+          }
+          const [cx, cy] = mmToScreen(state.cursorMm[0], state.cursorMm[1]);
+          ctx.lineTo(cx, cy);
+          if (state.drawTool === "fill_region" && draft.length >= 2) {
+            ctx.closePath();
+            ctx.fill();
+          }
+          ctx.stroke();
+
+          // Draw control vertices
+          for (let i = 0; i < draft.length; i++) {
+            const [vx, vy] = mmToScreen(draft[i][0], draft[i][1]);
+            ctx.fillStyle = i === 0 ? "#00ff88" : "#ffffff";
+            ctx.strokeStyle = "#0051a8";
+            ctx.lineWidth = 1.5;
+            ctx.beginPath();
+            ctx.arc(vx, vy, 4.2, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.stroke();
+          }
+        }
+        ctx.restore();
+      }
+
       document.getElementById("playerCounter").textContent = `${count} / ${pts.length}`;
       document.getElementById("zoomReadout").textContent = `${Math.round((state.zoomPxPerMm / 4.2) * 100)}%`;
     }
@@ -1336,6 +2110,9 @@
       let jumps = 0;
       let totalMm = 0;
       let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+      const colorSet = new Set();
+      const densityMap = new Map();
+      let peakDensity = 0;
 
       for (let i = 0; i < pts.length; i++) {
         const p = pts[i];
@@ -1343,6 +2120,16 @@
         if (p.x > maxX) maxX = p.x;
         if (p.y < minY) minY = p.y;
         if (p.y > maxY) maxY = p.y;
+        const col = (state.autoColor && p.color) ? p.color : state.threadColor;
+        colorSet.add(col);
+
+        const gx = Math.floor(p.x / 2.0);
+        const gy = Math.floor(p.y / 2.0);
+        const gk = `${gx},${gy}`;
+        const cellCount = (densityMap.get(gk) || 0) + 1;
+        densityMap.set(gk, cellCount);
+        if (cellCount > peakDensity) peakDensity = cellCount;
+
         if (i > 0) {
           const d = Math.hypot(p.x - pts[i - 1].x, p.y - pts[i - 1].y);
           totalMm += d;
@@ -1356,17 +2143,27 @@
       const mins = Math.floor(totalSec / 60);
       const secs = totalSec % 60;
 
+      const lblJumps = document.getElementById("lblStatJumps");
+      if (lblJumps) lblJumps.textContent = `Jump Stitches (>${state.jumpThresholdMm.toFixed(1)}mm)`;
       document.getElementById("statStitches").textContent = pts.length.toLocaleString();
       document.getElementById("statJumps").textContent = jumps.toLocaleString();
+      const statColorsEl = document.getElementById("statColors");
+      if (statColorsEl) statColorsEl.textContent = String(Math.max(1, colorSet.size));
       document.getElementById("statThread").textContent = `${(totalMm / 1000).toFixed(2)} m`;
       document.getElementById("statWidth").textContent = `${widthMm.toFixed(1)} mm`;
       document.getElementById("statHeight").textContent = `${heightMm.toFixed(1)} mm`;
+      const statPeakEl = document.getElementById("statPeakDensity");
+      if (statPeakEl) {
+        statPeakEl.textContent = `${peakDensity} pts${peakDensity >= 11 ? " (High!)" : ""}`;
+        statPeakEl.style.color = peakDensity >= 11 ? "#ff4d4f" : (peakDensity >= 7 ? "#f5a623" : "");
+      }
       document.getElementById("statTime").textContent = `${mins}m ${String(secs).padStart(2, "0")}s`;
     }
 
-    function encodeDstRecord(dx, dy, jump) {
+    function encodeDstRecord(dx, dy, jump, colorStop = false) {
       let b0 = 0, b1 = 0, b2 = 0b00000011;
       if (jump) b2 |= 0b10000000;
+      if (colorStop) b2 |= 0b11000000;
 
       if (dx >= 41) { b2 |= 0b00000100; dx -= 81; }
       if (dx <= -41) { b2 |= 0b00001000; dx += 81; }
@@ -1397,22 +2194,42 @@
       const pts = state.stitches;
       if (!pts.length) return;
 
+      let colorChanges = 0;
+      for (let i = 1; i < pts.length; i++) {
+        const cPrev = (state.autoColor && pts[i - 1].color) ? pts[i - 1].color : state.threadColor;
+        const cCurr = (state.autoColor && pts[i].color) ? pts[i].color : state.threadColor;
+        if (cPrev !== cCurr) colorChanges++;
+      }
+
       const header = new Uint8Array(512);
       header.fill(0x20);
       const headerStr =
         `LA:HATCH_CLONE     \r` +
         `ST:${String(pts.length).padStart(7, " ")}\r` +
-        `CO:  1\r+X:    500\r-X:    500\r+Y:    500\r-Y:    500\rAX:+    0\rAY:+    0\r`;
+        `CO:${String(Math.min(99, colorChanges + 1)).padStart(3, " ")}\r` +
+        `+X:    500\r-X:    500\r+Y:    500\r-Y:    500\rAX:+    0\rAY:+    0\r`;
       for (let i = 0; i < headerStr.length; i++) header[i] = headerStr.charCodeAt(i);
       header[511] = 0x1a;
 
       const body = [];
       let prevX = 0, prevY = 0;
-      for (const p of pts) {
+      let prevColor = (state.autoColor && pts[0].color) ? pts[0].color : state.threadColor;
+
+      for (let i = 0; i < pts.length; i++) {
+        const p = pts[i];
+        const currColor = (state.autoColor && p.color) ? p.color : state.threadColor;
+        if (i > 0 && currColor !== prevColor) {
+          // Emit Tajima DST Color-Change Stop record (0x00, 0x00, 0xC3)
+          body.push(...encodeDstRecord(0, 0, false, true));
+          prevColor = currColor;
+        }
+
         const currX = Math.round(p.x * 10);
         const currY = Math.round(-p.y * 10); // Invert Y for standard machine orientation
         let dx = currX - prevX;
         let dy = currY - prevY;
+        const isJumpMove = Boolean(p.jump) || Math.hypot(dx, dy) > state.jumpThresholdMm * 10;
+
         while (Math.abs(dx) > 121 || Math.abs(dy) > 121) {
           const sx = Math.max(-121, Math.min(121, dx));
           const sy = Math.max(-121, Math.min(121, dy));
@@ -1420,7 +2237,13 @@
           dx -= sx;
           dy -= sy;
         }
-        body.push(...encodeDstRecord(dx, dy, Boolean(p.jump)));
+
+        if (isJumpMove) {
+          // Emit jump movement record followed by needle drop or trim sequence
+          body.push(...encodeDstRecord(dx, dy, true));
+        } else {
+          body.push(...encodeDstRecord(dx, dy, false));
+        }
         prevX = currX;
         prevY = currY;
       }
@@ -1450,12 +2273,120 @@
       for (let i = 0; i < pts.length; i++) {
         if (i === 0) {
           pts[i].jump = false;
+          pts[i].trim = false;
         } else {
           const d = Math.hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y);
-          pts[i].jump = d > 7.0;
+          const colorChanged = Boolean(state.autoColor && pts[i].color && pts[i - 1].color && pts[i].color !== pts[i - 1].color);
+          pts[i].jump = d > state.jumpThresholdMm || colorChanged;
+          pts[i].trim = d > state.jumpThresholdMm * 1.4 || colorChanged;
         }
       }
       updateTelemetry();
+    }
+
+    // Dynamic density recalculation on dragged stitch node: subdivide stretched non-jump segments
+    // or merge over-compressed segments to preserve target stitch length and even density
+    function subdivideOrMergeAroundStitch(idx) {
+      const pts = state.stitches;
+      if (idx < 0 || idx >= pts.length) return;
+      const targetLen = Math.max(1.2, state.stitchLengthMm);
+      const maxAllowLen = Math.min(state.jumpThresholdMm - 0.3, targetLen * 1.65);
+      const minAllowLen = Math.max(0.28, targetLen * 0.22);
+
+      // Check segment after dragged point first (so index of dragged point stays known)
+      if (idx + 1 < pts.length && !pts[idx + 1].jump) {
+        const p0 = pts[idx];
+        const p1 = pts[idx + 1];
+        const dist = Math.hypot(p1.x - p0.x, p1.y - p0.y);
+        if (dist > maxAllowLen && dist <= state.jumpThresholdMm) {
+          const steps = Math.min(8, Math.max(2, Math.round(dist / targetLen)));
+          const toInsert = [];
+          for (let s = 1; s < steps; s++) {
+            const t = s / steps;
+            toInsert.push({
+              x: p0.x + (p1.x - p0.x) * t,
+              y: p0.y + (p1.y - p0.y) * t,
+              color: p0.color || state.threadColor,
+              jump: false,
+            });
+          }
+          pts.splice(idx + 1, 0, ...toInsert);
+        } else if (dist < minAllowLen && pts.length > 4 && idx + 1 < pts.length - 1) {
+          pts.splice(idx + 1, 1);
+        }
+      }
+
+      // Check segment before dragged point
+      if (idx > 0 && !pts[idx].jump) {
+        const p0 = pts[idx - 1];
+        const p1 = pts[idx];
+        const dist = Math.hypot(p1.x - p0.x, p1.y - p0.y);
+        if (dist > maxAllowLen && dist <= state.jumpThresholdMm) {
+          const steps = Math.min(8, Math.max(2, Math.round(dist / targetLen)));
+          const toInsert = [];
+          for (let s = 1; s < steps; s++) {
+            const t = s / steps;
+            toInsert.push({
+              x: p0.x + (p1.x - p0.x) * t,
+              y: p0.y + (p1.y - p0.y) * t,
+              color: p1.color || state.threadColor,
+              jump: false,
+            });
+          }
+          pts.splice(idx, 0, ...toInsert);
+        } else if (dist < minAllowLen && pts.length > 4 && idx > 1) {
+          pts.splice(idx - 1, 1);
+        }
+      }
+
+      state.visibleCount = pts.length;
+      const scrubberEl = document.getElementById("stitchScrubber");
+      scrubberEl.max = Math.max(2, pts.length);
+      scrubberEl.value = state.visibleCount;
+      recomputeJumpFlags();
+    }
+
+    function setDrawTool(toolName) {
+      state.drawTool = state.drawTool === toolName ? null : toolName;
+      state.activeDraftPtsMm = [];
+      if (state.drawTool) {
+        state.editMode = false;
+        document.getElementById("btnEditStitches").classList.remove("active");
+        document.getElementById("editModeBanner").classList.remove("visible");
+      }
+      document.getElementById("btnDrawSatin").classList.toggle("active", state.drawTool === "satin_spine");
+      document.getElementById("btnDrawRegion").classList.toggle("active", state.drawTool === "fill_region");
+      const banner = document.getElementById("drawToolBanner");
+      const bannerTitle = document.getElementById("drawToolBannerTitle");
+      if (state.drawTool) {
+        bannerTitle.textContent = state.drawTool === "satin_spine" ? "Draw Satin Spine:" : "Draw Fill Region:";
+        banner.classList.add("visible");
+        canvas.style.cursor = "crosshair";
+      } else {
+        banner.classList.remove("visible");
+        canvas.style.cursor = state.editMode ? "crosshair" : "grab";
+      }
+      renderViewport();
+    }
+
+    function commitActiveDraftObject() {
+      if (!state.drawTool) return;
+      const pts = state.activeDraftPtsMm;
+      const minPts = state.drawTool === "satin_spine" ? 2 : 3;
+      if (pts.length >= minPts) {
+        state.manualObjects.push({
+          type: state.drawTool,
+          pointsMm: pts.map(([x, y]) => [x, y]),
+          color: state.threadColor,
+          widthMm: 2.8,
+        });
+        document.getElementById("btnClearManual").style.display = "inline-flex";
+        state.activeDraftPtsMm = [];
+        regenerateDesign();
+      } else {
+        state.activeDraftPtsMm = [];
+        renderViewport();
+      }
     }
 
     function findNearestStitchIndexScreen(sx, sy, maxPixelRadius = 10) {
@@ -1501,6 +2432,12 @@
     }
 
     canvas.addEventListener("contextmenu", (e) => {
+      if (state.drawTool) {
+        e.preventDefault();
+        state.activeDraftPtsMm = [];
+        setDrawTool(null);
+        return;
+      }
       if (!state.editMode) return;
       e.preventDefault();
       const rect = canvas.getBoundingClientRect();
@@ -1519,10 +2456,39 @@
       }
     });
 
+    canvas.addEventListener("dblclick", (e) => {
+      if (!state.drawTool) return;
+      e.preventDefault();
+      commitActiveDraftObject();
+    });
+
+    window.addEventListener("keydown", (e) => {
+      if (!state.drawTool) return;
+      if (e.key === "Enter") {
+        e.preventDefault();
+        commitActiveDraftObject();
+      } else if (e.key === "Escape") {
+        e.preventDefault();
+        state.activeDraftPtsMm = [];
+        setDrawTool(null);
+      }
+    });
+
     canvas.addEventListener("mousedown", (e) => {
       const rect = canvas.getBoundingClientRect();
       const sx = e.clientX - rect.left;
       const sy = e.clientY - rect.top;
+
+      if (state.drawTool && e.button === 0) {
+        const [mx, my] = screenToMm(sx, sy);
+        const draft = state.activeDraftPtsMm;
+        // Avoid duplicate vertex on double-click
+        if (!draft.length || Math.hypot(mx - draft[draft.length - 1][0], my - draft[draft.length - 1][1]) > 0.35) {
+          draft.push([mx, my]);
+        }
+        renderViewport();
+        return;
+      }
 
       if (state.editMode && e.button === 0) {
         // Shift + Click on a thread segment drops a new stitch marker at the cursor
@@ -1568,8 +2534,13 @@
       const sy = e.clientY - rect.top;
       if (sx >= 0 && sy >= 0 && sx <= rect.width && sy <= rect.height) {
         const [mx, my] = screenToMm(sx, sy);
+        state.cursorMm = [mx, my];
         document.getElementById("coordReadout").textContent =
           `X: ${mx.toFixed(1)} mm, Y: ${(-my).toFixed(1)} mm`;
+
+        if (state.drawTool && state.activeDraftPtsMm.length > 0) {
+          renderViewport();
+        }
 
         if (state.editMode && state.draggingStitchIdx >= 0) {
           const pt = state.stitches[state.draggingStitchIdx];
@@ -1600,7 +2571,9 @@
     window.addEventListener("mouseup", () => {
       isDragging = false;
       if (state.draggingStitchIdx >= 0) {
+        const draggedIdx = state.draggingStitchIdx;
         state.draggingStitchIdx = -1;
+        subdivideOrMergeAroundStitch(draggedIdx);
         renderViewport();
       }
     });
@@ -1640,11 +2613,27 @@
     // Control Bindings
     document.getElementById("shapePreset").addEventListener("change", (e) => {
       state.shapePreset = e.target.value;
+      if (state.shapePreset === "barbed_wire") {
+        const bwMask = getOrBuildBarbedWireMask();
+        const previewCanvas = document.createElement("canvas");
+        previewCanvas.width = 140;
+        previewCanvas.height = 140;
+        previewCanvas.getContext("2d").drawImage(bwMask.sourceCanvas, 0, 0, 140, 140);
+        const box = document.getElementById("imagePreviewBox");
+        box.innerHTML = "";
+        box.appendChild(previewCanvas);
+      }
       regenerateDesign();
     });
 
     document.getElementById("stitchMode").addEventListener("change", (e) => {
       state.stitchMode = e.target.value;
+      regenerateDesign();
+    });
+
+    document.getElementById("inpJumpThreshold").addEventListener("input", (e) => {
+      state.jumpThresholdMm = parseFloat(e.target.value);
+      document.getElementById("valJumpThreshold").textContent = `${state.jumpThresholdMm.toFixed(1)} mm`;
       regenerateDesign();
     });
 
@@ -1669,7 +2658,7 @@
     document.getElementById("inpThreshold").addEventListener("input", (e) => {
       state.threshold = parseInt(e.target.value, 10);
       document.getElementById("valThreshold").textContent = String(state.threshold);
-      if (state.shapePreset === "image") regenerateDesign();
+      if (state.shapePreset === "image" || state.shapePreset === "barbed_wire") regenerateDesign();
     });
 
     document.getElementById("chkContourLock").addEventListener("change", (e) => {
@@ -1682,6 +2671,11 @@
       regenerateDesign();
     });
 
+    document.getElementById("chkAutoSatinSkeleton").addEventListener("change", (e) => {
+      state.autoSatinSkeleton = e.target.checked;
+      regenerateDesign();
+    });
+
     document.getElementById("hoopSize").addEventListener("change", (e) => {
       state.hoopSizeMm = parseInt(e.target.value, 10);
       renderViewport();
@@ -1689,12 +2683,34 @@
 
     // Top Toolbar Toggles
     document.getElementById("btnEditStitches").addEventListener("click", (e) => {
+      if (state.drawTool) setDrawTool(null);
       state.editMode = !state.editMode;
       state.hoverStitchIdx = -1;
       state.draggingStitchIdx = -1;
       e.currentTarget.classList.toggle("active", state.editMode);
       document.getElementById("editModeBanner").classList.toggle("visible", state.editMode);
       canvas.style.cursor = state.editMode ? "crosshair" : "grab";
+      renderViewport();
+    });
+
+    document.getElementById("btnDrawSatin").addEventListener("click", () => {
+      setDrawTool("satin_spine");
+    });
+
+    document.getElementById("btnDrawRegion").addEventListener("click", () => {
+      setDrawTool("fill_region");
+    });
+
+    document.getElementById("btnClearManual").addEventListener("click", (e) => {
+      state.manualObjects = [];
+      state.activeDraftPtsMm = [];
+      e.currentTarget.style.display = "none";
+      regenerateDesign();
+    });
+
+    document.getElementById("btnHeatmap").addEventListener("click", (e) => {
+      state.showHeatmap = !state.showHeatmap;
+      e.currentTarget.classList.toggle("active", state.showHeatmap);
       renderViewport();
     });
 
@@ -1713,6 +2729,19 @@
     document.getElementById("btnGrid").addEventListener("click", (e) => {
       state.showGrid = !state.showGrid;
       e.currentTarget.classList.toggle("active", state.showGrid);
+      renderViewport();
+    });
+
+    document.getElementById("btnUnderlay").addEventListener("click", (e) => {
+      state.showUnderlay = !state.showUnderlay;
+      e.currentTarget.classList.toggle("active", state.showUnderlay);
+      renderViewport();
+    });
+
+    document.getElementById("inpUnderlayOpacity").addEventListener("input", (e) => {
+      const pct = parseInt(e.target.value, 10);
+      state.underlayOpacity = pct / 100.0;
+      document.getElementById("valUnderlayOpacity").textContent = `${pct}%`;
       renderViewport();
     });
 
@@ -1906,37 +2935,8 @@
           const dw = img.width * scale, dh = img.height * scale;
           octx.drawImage(img, (w - dw) / 2, (h - dh) / 2, dw, dh);
 
-          const imgData = octx.getImageData(0, 0, w, h).data;
-          const gray = new Uint8Array(w * h);
-          const rArr = new Uint8Array(w * h);
-          const gArr = new Uint8Array(w * h);
-          const bArr = new Uint8Array(w * h);
-
-          for (let i = 0; i < w * h; i++) {
-            const a = imgData[i * 4 + 3] / 255;
-            const r = Math.round(imgData[i * 4] * a + 255 * (1 - a));
-            const g = Math.round(imgData[i * 4 + 1] * a + 255 * (1 - a));
-            const b = Math.round(imgData[i * 4 + 2] * a + 255 * (1 - a));
-            rArr[i] = r;
-            gArr[i] = g;
-            bArr[i] = b;
-
-            // Chroma-aware darkness: ensures saturated red/orange/blue logos register as strongly as black text
-            const luma = 0.299 * r + 0.587 * g + 0.114 * b;
-            const minCh = Math.min(r, g, b);
-            gray[i] = Math.round(0.45 * luma + 0.55 * minCh);
-          }
-
-          state.bitmapMask = {
-            width: w,
-            height: h,
-            gray,
-            r: rArr,
-            g: gArr,
-            b: bArr,
-            cachedThreshold: -1,
-            extracted: null,
-          };
+          state.bitmapMask = buildBitmapMaskFromCanvas(off);
+          state.uploadedImage = img;
 
           const previewCanvas = document.createElement("canvas");
           previewCanvas.width = 140;

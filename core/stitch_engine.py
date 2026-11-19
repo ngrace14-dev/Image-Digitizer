@@ -271,3 +271,132 @@ def generate_multi_polygon_tatami(
 
     ordered = optimize_stitch_blocks(component_blocks)
     return [pt for blk in ordered for pt in blk]
+
+
+def generate_satin_column(
+    spine_points_mm: Sequence[Union[Point2D, Tuple[float, float, float]]],
+    spacing_mm: float = 0.45,
+    default_width_mm: float = 2.4,
+    taper_ends: bool = True,
+    include_underpath: bool = True,
+) -> List[Point2D]:
+    """
+    Generate perpendicular zig-zag Satin Column stitches along a medial-axis spine
+    with optional width profile (x_mm, y_mm, width_mm) and tapered spike tips.
+    """
+    if len(spine_points_mm) < 2:
+        return []
+
+    raw_xy: List[Point2D] = [(float(p[0]), float(p[1])) for p in spine_points_mm]
+    raw_w: List[float] = [
+        float(p[2]) if len(p) >= 3 else default_width_mm  # type: ignore[misc]
+        for p in spine_points_mm
+    ]
+
+    step = max(0.3, spacing_mm)
+    sampled_xy = sample_path(raw_xy, step)
+    if len(sampled_xy) < 2:
+        return []
+
+    # Interpolate widths along sampled spine points
+    sampled_w: List[float] = []
+    for sx, sy in sampled_xy:
+        best_d = float("inf")
+        best_w = default_width_mm
+        for (rx, ry), rw in zip(raw_xy, raw_w):
+            d = math.hypot(sx - rx, sy - ry)
+            if d < best_d:
+                best_d = d
+                best_w = rw
+        sampled_w.append(best_w)
+
+    stitches: List[Point2D] = []
+    if include_underpath and len(sampled_xy) >= 3:
+        underpath = sample_path(raw_xy, max(1.5, step * 2.5))
+        stitches.extend(underpath)
+        sampled_xy = list(reversed(sampled_xy))
+        sampled_w = list(reversed(sampled_w))
+
+    n = len(sampled_xy)
+    for i in range(n):
+        p_prev = sampled_xy[max(0, i - 1)]
+        p_next = sampled_xy[min(n - 1, i + 1)]
+        tx = p_next[0] - p_prev[0]
+        ty = p_next[1] - p_prev[1]
+        length = math.hypot(tx, ty) or 1.0
+        nx = -ty / length
+        ny = tx / length
+
+        taper = 1.0
+        if taper_ends and n >= 5:
+            taper = min(1.0, min(i, n - 1 - i) / 2.5 + 0.28)
+        half_w = max(0.35, sampled_w[i] * 0.5 * taper)
+
+        cx, cy = sampled_xy[i]
+        stitches.append((cx + nx * half_w, cy + ny * half_w))
+        stitches.append((cx - nx * half_w, cy - ny * half_w))
+
+    return stitches
+
+
+def subdivide_stitch_segment(
+    stitches_mm: Sequence[Point2D],
+    modified_idx: int,
+    target_length_mm: float = 2.5,
+    max_stitch_threshold_mm: float = 5.5,
+) -> List[Point2D]:
+    """
+    Dynamic density recalculation when a stitch node is dragged:
+    automatically subdivides stretched adjacent segments (below jump threshold)
+    so target stitch density is preserved.
+    """
+    pts = list(stitches_mm)
+    if modified_idx < 0 or modified_idx >= len(pts):
+        return pts
+
+    max_allow = min(max_stitch_threshold_mm, target_length_mm * 1.65)
+
+    # Check segment after modified_idx
+    if modified_idx + 1 < len(pts):
+        p0 = pts[modified_idx]
+        p1 = pts[modified_idx + 1]
+        dist = calculate_distance(p0, p1)
+        if max_allow < dist <= max_stitch_threshold_mm:
+            steps = max(2, int(round(dist / target_length_mm)))
+            inserts = [
+                (p0[0] + (p1[0] - p0[0]) * (s / steps), p0[1] + (p1[1] - p0[1]) * (s / steps))
+                for s in range(1, steps)
+            ]
+            pts[modified_idx + 1 : modified_idx + 1] = inserts
+
+    # Check segment before modified_idx
+    if modified_idx > 0:
+        p0 = pts[modified_idx - 1]
+        p1 = pts[modified_idx]
+        dist = calculate_distance(p0, p1)
+        if max_allow < dist <= max_stitch_threshold_mm:
+            steps = max(2, int(round(dist / target_length_mm)))
+            inserts = [
+                (p0[0] + (p1[0] - p0[0]) * (s / steps), p0[1] + (p1[1] - p0[1]) * (s / steps))
+                for s in range(1, steps)
+            ]
+            pts[modified_idx:modified_idx] = inserts
+
+    return pts
+
+
+def compute_density_heatmap(
+    stitches_mm: Sequence[Point2D],
+    cell_size_mm: float = 2.0,
+) -> dict[Tuple[int, int], int]:
+    """
+    Bucket needle penetrations into a physical millimeter grid (e.g., 2.0 x 2.0 mm cells)
+    to detect high-density clusters and potential fabric puckering hotspots.
+    """
+    grid: dict[Tuple[int, int], int] = {}
+    if cell_size_mm <= 0:
+        return grid
+    for x_mm, y_mm in stitches_mm:
+        key = (int(math.floor(x_mm / cell_size_mm)), int(math.floor(y_mm / cell_size_mm)))
+        grid[key] = grid.get(key, 0) + 1
+    return grid

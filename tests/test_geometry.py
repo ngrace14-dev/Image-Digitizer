@@ -10,8 +10,16 @@ from core.stitch_engine import (
     generate_concentric_fill,
     generate_tatami_fill,
     generate_multi_polygon_tatami,
+    generate_satin_column,
+    subdivide_stitch_segment,
+    compute_density_heatmap,
 )
-from vision.vectorizer import preprocess_binary_mask, extract_hierarchical_polygons
+from vision.vectorizer import (
+    preprocess_binary_mask,
+    extract_hierarchical_polygons,
+    extract_color_layer_masks,
+    extract_medial_skeleton_paths,
+)
 from io.dst_writer import write_dst
 
 
@@ -107,4 +115,38 @@ def test_dst_writer() -> None:
         # 512-byte header + 5 stitch records (3 bytes each) + 1 EOF record (3 bytes) = 530 bytes
         assert len(data) == 512 + (len(stitches) + 1) * 3
         assert data[-3:] == bytes([0x00, 0x00, 0xF3])
+
+
+def test_color_layer_separation_and_medial_satin_columns() -> None:
+    # Create a synthetic barbed-wire style line-art image with a dark black outline and a blue core strand
+    canvas = np.full((120, 220, 3), 255, dtype=np.uint8)
+    # Dark outer outline (BGR: 25, 25, 25)
+    canvas[52:68, 20:200] = (25, 25, 25)
+    # Bright blue interior core (BGR: 255, 144, 30)
+    canvas[57:63, 25:195] = (255, 144, 30)
+
+    layers = extract_color_layer_masks(canvas, num_colors=3, min_pixels=15)
+    assert len(layers) >= 2
+    # Interior fill layer must be sequenced BEFORE the dark outline layer
+    assert layers[0][2] is False
+    assert layers[-1][2] is True
+
+    # Extract medial-axis skeleton from the blue core mask and generate tapered satin column stitches
+    core_mask = layers[0][1]
+    chains = extract_medial_skeleton_paths(core_mask, pixel_scale_mm=0.25)
+    assert len(chains) >= 1
+    satin_pts = generate_satin_column(chains[0], spacing_mm=0.6)
+    assert len(satin_pts) > 20
+
+
+def test_dynamic_subdivision_and_density_heatmap() -> None:
+    stitches = [(0.0, 0.0), (2.0, 0.0), (4.0, 0.0)]
+    # Drag middle stitch to (4.8, 0.0) so segment [0 -> 1] stretches to 4.8 mm (> 2.0 * 1.65, <= 5.5 mm)
+    stretched = [(0.0, 0.0), (4.8, 0.0), (6.0, 0.0)]
+    subdivided = subdivide_stitch_segment(stretched, modified_idx=1, target_length_mm=2.0, max_stitch_threshold_mm=5.5)
+    assert len(subdivided) > len(stretched)
+
+    heatmap = compute_density_heatmap(subdivided, cell_size_mm=2.0)
+    assert len(heatmap) >= 2
+
 
