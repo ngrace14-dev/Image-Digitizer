@@ -499,7 +499,12 @@
       manualObjects: [], // Array of { type: 'satin_spine' | 'fill_region', pointsMm: [[x,y],...], color: string, widthMm?: number }
       selectedStitchIdx: -1,
       hoverStitchIdx: -1,
+      hoverSegmentIdx: -1,
       draggingStitchIdx: -1,
+      draggingRegionPoint: null, // { objIdx: number, ptIdx: number }
+      draggingDraftPtIdx: -1,
+      hoverRegionPoint: null, // { objIdx: number, ptIdx: number }
+      hoverDraftPtIdx: -1,
 
       // Viewport camera (center of canvas = (0,0) mm)
       panX: 0,
@@ -1359,15 +1364,30 @@
           }
 
           if (bestA !== -1) {
-            usedActive.add(bestA);
-            const cIdx = activeChains[bestA].chainIdx;
-            chains[cIdx].push({ rowIndex, x0, x1, yRot });
-            nextActive.push({ chainIdx: cIdx, x0, x1 });
-          } else {
-            const cIdx = chains.length;
-            chains.push([{ rowIndex, x0, x1, yRot }]);
-            nextActive.push({ chainIdx: cIdx, x0, x1 });
+            // Verify the step from the previous scanline row to this row stays inside insideFn
+            // so concave corners (like the bottom-right of 'E' or 'L') never bridge diagonally across exterior space!
+            const ac = activeChains[bestA];
+            const prevChain = chains[ac.chainIdx];
+            const prevRow = prevChain[prevChain.length - 1];
+            const prevEndRotX = (prevChain.length - 1) % 2 === 1 ? prevRow.x0 : prevRow.x1;
+            const nextStartRotX = prevChain.length % 2 === 1 ? x1 : x0;
+            const midRotX = (prevEndRotX + nextStartRotX) * 0.5;
+            const midRotY = (prevRow.yRot + yRot) * 0.5;
+            const [mdx, mdy] = rotatePoint(midRotX, midRotY, rad);
+            const transitionGap = Math.hypot(nextStartRotX - prevEndRotX, yRot - prevRow.yRot);
+
+            if (transitionGap <= rowSpacingMm * 3.2 || insideFn(cx + mdx, cy + mdy)) {
+              usedActive.add(bestA);
+              const cIdx = ac.chainIdx;
+              chains[cIdx].push({ rowIndex, x0, x1, yRot });
+              nextActive.push({ chainIdx: cIdx, x0, x1 });
+              continue;
+            }
           }
+
+          const cIdx = chains.length;
+          chains.push([{ rowIndex, x0, x1, yRot }]);
+          nextActive.push({ chainIdx: cIdx, x0, x1 });
         }
 
         activeChains = nextActive;
@@ -1407,10 +1427,10 @@
           const prev = result[result.length - 1];
           const next = b[0];
           const gap = Math.hypot(next.x - prev.x, next.y - prev.y);
-          // Only walk via underpath if every intermediate point stays strictly inside insideFn (never bridge across letter holes or blank background!)
-          if (gap > 2.2 && gap <= 12.0) {
+          // Check EVERY segment transition: if a stitch or travel crosses outside insideFn, split or mark as JUMP
+          if (gap > 1.8 && gap <= 12.0) {
             let staysInside = true;
-            const checks = Math.max(3, Math.ceil(gap / 0.7));
+            const checks = Math.max(4, Math.ceil(gap / 0.45));
             for (let c = 1; c < checks; c++) {
               const t = c / checks;
               if (!insideFn(prev.x + (next.x - prev.x) * t, prev.y + (next.y - prev.y) * t)) {
@@ -1958,7 +1978,25 @@
               col
             );
             if (state.contourLock || obj.type === "grid_outline") {
-              pts.push(...sampleClosedRing(poly, Math.min(2.0, state.stitchLengthMm * 0.7), col));
+              const ringPts = sampleClosedRing(poly, Math.min(2.0, state.stitchLengthMm * 0.7), col);
+              if (ringPts.length > 0 && pts.length > 0) {
+                const prev = pts[pts.length - 1];
+                const next = ringPts[0];
+                const gap = Math.hypot(next.x - prev.x, next.y - prev.y);
+                let staysInside = gap <= 8.0;
+                const checks = Math.max(3, Math.ceil(gap / 0.5));
+                for (let c = 1; c < checks && staysInside; c++) {
+                  const t = c / checks;
+                  if (!pointInPolygon(prev.x + (next.x - prev.x) * t, prev.y + (next.y - prev.y) * t, poly)) {
+                    staysInside = false;
+                  }
+                }
+                if (!staysInside) {
+                  ringPts[0].jump = true;
+                  ringPts[0].trim = true;
+                }
+              }
+              pts.push(...ringPts);
             }
           }
           if (pts.length > 0) {
@@ -2294,6 +2332,55 @@
           ctx.fill();
           ctx.stroke();
         }
+
+        // 3b. Render Targetable Thread & Jump Segment Midpoint Handles in Edit Mode
+        if (state.editMode) {
+          ctx.save();
+          // Highlight the entire hovered thread segment line so user sees exactly which thread they are targeting
+          if (state.hoverSegmentIdx >= 1 && state.hoverSegmentIdx < count) {
+            const p0 = pts[state.hoverSegmentIdx - 1];
+            const p1 = pts[state.hoverSegmentIdx];
+            const [sx0, sy0] = mmToScreen(p0.x, p0.y);
+            const [sx1, sy1] = mmToScreen(p1.x, p1.y);
+            ctx.strokeStyle = p1.jump ? "#00e5ff" : "#ff2a2a";
+            ctx.lineWidth = 3.2;
+            ctx.setLineDash(p1.jump ? [5, 3] : []);
+            ctx.beginPath();
+            ctx.moveTo(sx0, sy0);
+            ctx.lineTo(sx1, sy1);
+            ctx.stroke();
+            ctx.setLineDash([]);
+          }
+
+          // Draw clickable Diamond Midpoint Handles on every Jump Thread, long segment (>2.2mm), or hovered segment
+          for (let i = 1; i < count; i++) {
+            const p0 = pts[i - 1];
+            const p1 = pts[i];
+            const isJump = Boolean(p1.jump);
+            const isHoveredSeg = i === state.hoverSegmentIdx;
+            const segLenMm = Math.hypot(p1.x - p0.x, p1.y - p0.y);
+            if (!isJump && !isHoveredSeg && segLenMm < Math.max(2.2, state.stitchLengthMm * 0.85)) continue;
+
+            const [mx, my] = mmToScreen((p0.x + p1.x) * 0.5, (p0.y + p1.y) * 0.5);
+            const sz = isHoveredSeg ? 6.5 : (isJump ? 5.2 : 3.8);
+
+            ctx.fillStyle = isHoveredSeg
+              ? "#ffffff"
+              : (isJump ? "#ff3b30" : "#00e5ff");
+            ctx.strokeStyle = isJump ? "#ffffff" : "#181a1f";
+            ctx.lineWidth = isHoveredSeg ? 2.2 : 1.4;
+
+            ctx.beginPath();
+            ctx.moveTo(mx, my - sz);
+            ctx.lineTo(mx + sz, my);
+            ctx.lineTo(mx, my + sz);
+            ctx.lineTo(mx - sz, my);
+            ctx.closePath();
+            ctx.fill();
+            ctx.stroke();
+          }
+          ctx.restore();
+        }
       }
 
       // 4. Current Needle Crosshair Indicator
@@ -2346,32 +2433,51 @@
         ctx.restore();
       }
 
-      // 6. Render Manual Satin Spine / Fill Region Vector Overlays & Active Drawing Preview
-      if (state.manualObjects.length > 0 || state.activeDraftPtsMm.length > 0) {
+      // 6. Render Manual Satin Spine / Fill Region Vector Overlays, Editable Polygon Nodes & Active Loop Preview
+      if (state.manualObjects.length > 0 || state.activeDraftPtsMm.length > 0 || state.drawTool) {
         ctx.save();
-        // Committed manual vector outlines (subtle dashed guide in edit/draw mode)
-        if (state.drawTool || state.editMode) {
-          for (const obj of state.manualObjects) {
-            if (!obj.pointsMm || obj.pointsMm.length < 2) continue;
-            ctx.strokeStyle = "rgba(30, 144, 255, 0.65)";
+        // Committed manual vector outlines + draggable/insertable/deletable region nodes
+        for (let objIdx = 0; objIdx < state.manualObjects.length; objIdx++) {
+          const obj = state.manualObjects[objIdx];
+          if (!obj.pointsMm || obj.pointsMm.length < 2) continue;
+          const isClosed = obj.type === "fill_region" || obj.type === "grid_outline";
+          ctx.strokeStyle = isClosed ? "rgba(0, 229, 255, 0.85)" : "rgba(30, 144, 255, 0.75)";
+          ctx.lineWidth = 1.8;
+          ctx.setLineDash([4, 3]);
+          ctx.beginPath();
+          for (let i = 0; i < obj.pointsMm.length; i++) {
+            const [sx, sy] = mmToScreen(obj.pointsMm[i][0], obj.pointsMm[i][1]);
+            if (i === 0) ctx.moveTo(sx, sy);
+            else ctx.lineTo(sx, sy);
+          }
+          if (isClosed) ctx.closePath();
+          ctx.stroke();
+          ctx.setLineDash([]);
+
+          // Always render interactive corner nodes on user-defined Fill Regions & Outlines so user can reshape, add, or delete nodes!
+          for (let ptIdx = 0; ptIdx < obj.pointsMm.length; ptIdx++) {
+            const [vx, vy] = mmToScreen(obj.pointsMm[ptIdx][0], obj.pointsMm[ptIdx][1]);
+            const isHov =
+              state.hoverRegionPoint &&
+              state.hoverRegionPoint.objIdx === objIdx &&
+              state.hoverRegionPoint.ptIdx === ptIdx;
+            const isDrag =
+              state.draggingRegionPoint &&
+              state.draggingRegionPoint.objIdx === objIdx &&
+              state.draggingRegionPoint.ptIdx === ptIdx;
+            const sz = isDrag || isHov ? 5.8 : 4.4;
+            ctx.fillStyle = isDrag ? "#ff3b30" : (isHov ? "#00ff88" : "#00e5ff");
+            ctx.strokeStyle = "#181a1f";
             ctx.lineWidth = 1.5;
-            ctx.setLineDash([3, 3]);
-            ctx.beginPath();
-            for (let i = 0; i < obj.pointsMm.length; i++) {
-              const [sx, sy] = mmToScreen(obj.pointsMm[i][0], obj.pointsMm[i][1]);
-              if (i === 0) ctx.moveTo(sx, sy);
-              else ctx.lineTo(sx, sy);
-            }
-            if (obj.type === "fill_region" || obj.type === "grid_outline") ctx.closePath();
-            ctx.stroke();
+            ctx.fillRect(vx - sz, vy - sz, sz * 2, sz * 2);
+            ctx.strokeRect(vx - sz, vy - sz, sz * 2, sz * 2);
           }
         }
 
         // Active in-progress vector drawing tool preview
         if (state.drawTool) {
           const [cx, cy] = mmToScreen(state.cursorMm[0], state.cursorMm[1]);
-          // Show live grid-snap target reticle when Snap Tracing to Stitch Grid is active
-          if (state.snapToGrid) {
+          if (state.snapToGrid && state.drawTool === "grid_outline") {
             ctx.save();
             ctx.strokeStyle = "#00ff88";
             ctx.lineWidth = 1.4;
@@ -2383,11 +2489,19 @@
             ctx.restore();
           }
         }
+
         if (state.drawTool && state.activeDraftPtsMm.length > 0) {
           const draft = state.activeDraftPtsMm;
+          const isLoopTool = state.drawTool === "fill_region" || state.drawTool === "grid_outline";
+          const [startSx, startSy] = mmToScreen(draft[0][0], draft[0][1]);
+          const [cx, cy] = mmToScreen(state.cursorMm[0], state.cursorMm[1]);
+          const canCloseLoop = isLoopTool && draft.length >= 3 && Math.hypot(cx - startSx, cy - startSy) <= 18;
+
           ctx.setLineDash(state.drawTool === "grid_outline" ? [5, 3] : []);
-          ctx.strokeStyle = state.drawTool === "grid_outline" ? "#00ff88" : "#00e5ff";
-          ctx.fillStyle = state.drawTool === "grid_outline" ? "rgba(0, 255, 136, 0.14)" : "rgba(0, 229, 255, 0.16)";
+          ctx.strokeStyle = canCloseLoop ? "#00ff88" : (state.drawTool === "grid_outline" ? "#00ff88" : "#00e5ff");
+          ctx.fillStyle = canCloseLoop
+            ? "rgba(0, 255, 136, 0.25)"
+            : (state.drawTool === "grid_outline" ? "rgba(0, 255, 136, 0.14)" : "rgba(0, 229, 255, 0.16)");
           ctx.lineWidth = 2.2;
           ctx.beginPath();
           for (let i = 0; i < draft.length; i++) {
@@ -2395,22 +2509,34 @@
             if (i === 0) ctx.moveTo(sx, sy);
             else ctx.lineTo(sx, sy);
           }
-          const [cx, cy] = mmToScreen(state.cursorMm[0], state.cursorMm[1]);
-          ctx.lineTo(cx, cy);
-          if ((state.drawTool === "fill_region" || state.drawTool === "grid_outline") && draft.length >= 2) {
+          ctx.lineTo(canCloseLoop ? startSx : cx, canCloseLoop ? startSy : cy);
+          if (isLoopTool && draft.length >= 2) {
             ctx.closePath();
             ctx.fill();
           }
           ctx.stroke();
+          ctx.setLineDash([]);
 
-          // Draw control vertices
+          // Draw interactive draft vertices (with large pulsing magnetic close-loop ring on Start Node #0!)
           for (let i = 0; i < draft.length; i++) {
             const [vx, vy] = mmToScreen(draft[i][0], draft[i][1]);
-            ctx.fillStyle = i === 0 ? "#00ff88" : "#ffffff";
+            const isStart = i === 0;
+            if (isStart && isLoopTool && draft.length >= 3) {
+              ctx.save();
+              ctx.strokeStyle = canCloseLoop ? "#00ff88" : "rgba(0, 255, 136, 0.7)";
+              ctx.fillStyle = canCloseLoop ? "rgba(0, 255, 136, 0.35)" : "rgba(0, 255, 136, 0.12)";
+              ctx.lineWidth = canCloseLoop ? 2.5 : 1.5;
+              ctx.beginPath();
+              ctx.arc(vx, vy, canCloseLoop ? 12 : 9, 0, Math.PI * 2);
+              ctx.fill();
+              ctx.stroke();
+              ctx.restore();
+            }
+            ctx.fillStyle = isStart ? "#00ff88" : (i === state.hoverDraftPtIdx ? "#ffd166" : "#ffffff");
             ctx.strokeStyle = "#0051a8";
-            ctx.lineWidth = 1.5;
+            ctx.lineWidth = 1.6;
             ctx.beginPath();
-            ctx.arc(vx, vy, 4.2, 0, Math.PI * 2);
+            ctx.arc(vx, vy, isStart ? 5.5 : 4.4, 0, Math.PI * 2);
             ctx.fill();
             ctx.stroke();
           }
@@ -2727,11 +2853,11 @@
       const bannerTitle = document.getElementById("drawToolBannerTitle");
       if (state.drawTool) {
         if (state.drawTool === "grid_outline") {
-          bannerTitle.textContent = "Grid Trace Outline (Snapped to Stitch Grid):";
+          banner.innerHTML = `<b id="drawToolBannerTitle">Grid Trace Outline:</b> Click to drop grid-snapped nodes &bull; <b>Click Green Start Node</b> (or Enter/Double-Click) to close loop &amp; fill &bull; Drag nodes to reshape &bull; Right-Click node to delete`;
         } else if (state.drawTool === "satin_spine") {
-          bannerTitle.textContent = "Draw Satin Spine:";
+          banner.innerHTML = `<b id="drawToolBannerTitle">Draw Satin Spine:</b> Click to drop spine points &bull; Double-Click or Enter to finish &bull; Drag nodes to reshape &bull; Right-Click / Esc to cancel`;
         } else {
-          bannerTitle.textContent = "Draw Fill Region:";
+          banner.innerHTML = `<b id="drawToolBannerTitle">Freehand Fill Region:</b> Click to drop boundary nodes &bull; <b>Click Green Start Node</b> (or Enter/Double-Click) to close loop &amp; fill interior &bull; Drag square nodes to reshape &bull; Shift+Click edge to add node &bull; Right-Click node to delete`;
         }
         banner.classList.add("visible");
         canvas.style.cursor = "crosshair";
@@ -2779,6 +2905,82 @@
       return bestIdx;
     }
 
+    // Find nearest midpoint diamond handle on a thread or jump segment in Edit Mode
+    function findNearestSegmentMidpointScreen(sx, sy, maxPixelRadius = 11) {
+      const pts = state.stitches;
+      const limit = Math.min(state.visibleCount, pts.length);
+      let bestIdx = -1;
+      let bestDist = maxPixelRadius;
+      for (let i = 1; i < limit; i++) {
+        const p0 = pts[i - 1];
+        const p1 = pts[i];
+        const [mx, my] = mmToScreen((p0.x + p1.x) * 0.5, (p0.y + p1.y) * 0.5);
+        const d = Math.hypot(sx - mx, sy - my);
+        if (d <= bestDist) {
+          bestDist = d;
+          bestIdx = i;
+        }
+      }
+      return bestIdx;
+    }
+
+    // Find nearest committed region / outline polygon node on screen
+    function findNearestManualRegionNodeScreen(sx, sy, maxPixelRadius = 11) {
+      for (let objIdx = state.manualObjects.length - 1; objIdx >= 0; objIdx--) {
+        const obj = state.manualObjects[objIdx];
+        if (!obj.pointsMm) continue;
+        for (let ptIdx = 0; ptIdx < obj.pointsMm.length; ptIdx++) {
+          const [vx, vy] = mmToScreen(obj.pointsMm[ptIdx][0], obj.pointsMm[ptIdx][1]);
+          if (Math.hypot(sx - vx, sy - vy) <= maxPixelRadius) {
+            return { objIdx, ptIdx };
+          }
+        }
+      }
+      return null;
+    }
+
+    // Find nearest edge on a committed manual region / outline (for Shift+Click node insertion)
+    function findNearestManualRegionEdgeScreen(sx, sy, maxPixelDist = 12) {
+      let best = null;
+      let bestDist = maxPixelDist;
+      for (let objIdx = state.manualObjects.length - 1; objIdx >= 0; objIdx--) {
+        const obj = state.manualObjects[objIdx];
+        if (!obj.pointsMm || obj.pointsMm.length < 2) continue;
+        const pts = obj.pointsMm;
+        const isClosed = obj.type === "fill_region" || obj.type === "grid_outline";
+        const edgeCount = isClosed ? pts.length : pts.length - 1;
+        for (let i = 0; i < edgeCount; i++) {
+          const p0 = pts[i];
+          const p1 = pts[(i + 1) % pts.length];
+          const [x1, y1] = mmToScreen(p0[0], p0[1]);
+          const [x2, y2] = mmToScreen(p1[0], p1[1]);
+          const dx = x2 - x1;
+          const dy = y2 - y1;
+          const lenSq = dx * dx + dy * dy;
+          let t = 0;
+          if (lenSq > 0) {
+            t = Math.max(0, Math.min(1, ((sx - x1) * dx + (sy - y1) * dy) / lenSq));
+          }
+          const d = Math.hypot(sx - (x1 + t * dx), sy - (y1 + t * dy));
+          if (d <= bestDist) {
+            bestDist = d;
+            best = { objIdx, insertAtIdx: i + 1 };
+          }
+        }
+      }
+      return best;
+    }
+
+    // Find nearest draft vertex in active drawing loop
+    function findNearestDraftNodeScreen(sx, sy, maxPixelRadius = 11) {
+      const draft = state.activeDraftPtsMm;
+      for (let i = draft.length - 1; i >= 0; i--) {
+        const [vx, vy] = mmToScreen(draft[i][0], draft[i][1]);
+        if (Math.hypot(sx - vx, sy - vy) <= maxPixelRadius) return i;
+      }
+      return -1;
+    }
+
     function findNearestSegmentIndexScreen(sx, sy, maxPixelDist = 9) {
       const pts = state.stitches;
       const count = Math.min(state.visibleCount, pts.length);
@@ -2806,18 +3008,70 @@
     }
 
     canvas.addEventListener("contextmenu", (e) => {
-      if (state.drawTool) {
-        e.preventDefault();
-        state.activeDraftPtsMm = [];
-        setDrawTool(null);
-        return;
-      }
-      if (!state.editMode) return;
-      e.preventDefault();
       const rect = canvas.getBoundingClientRect();
       const sx = e.clientX - rect.left;
       const sy = e.clientY - rect.top;
+
+      // Right-click on an active draft point removes that point (or exits tool if no points left)
+      if (state.drawTool) {
+        e.preventDefault();
+        const draftHit = findNearestDraftNodeScreen(sx, sy, 13);
+        if (draftHit >= 0) {
+          state.activeDraftPtsMm.splice(draftHit, 1);
+          renderViewport();
+          return;
+        }
+        const regHit = findNearestManualRegionNodeScreen(sx, sy, 12);
+        if (regHit) {
+          const obj = state.manualObjects[regHit.objIdx];
+          obj.pointsMm.splice(regHit.ptIdx, 1);
+          const minPts = obj.type === "satin_spine" ? 2 : 3;
+          if (obj.pointsMm.length < minPts) {
+            state.manualObjects.splice(regHit.objIdx, 1);
+            if (!state.manualObjects.length) {
+              document.getElementById("btnClearManual").style.display = "none";
+            }
+          }
+          regenerateDesign();
+          return;
+        }
+        if (state.activeDraftPtsMm.length > 0) {
+          state.activeDraftPtsMm.pop();
+          renderViewport();
+        } else {
+          setDrawTool(null);
+        }
+        return;
+      }
+
+      // Allow right-clicking a committed manual region node at any time to delete it
+      const regHit = findNearestManualRegionNodeScreen(sx, sy, 12);
+      if (regHit) {
+        e.preventDefault();
+        const obj = state.manualObjects[regHit.objIdx];
+        obj.pointsMm.splice(regHit.ptIdx, 1);
+        const minPts = obj.type === "satin_spine" ? 2 : 3;
+        if (obj.pointsMm.length < minPts) {
+          state.manualObjects.splice(regHit.objIdx, 1);
+          if (!state.manualObjects.length) {
+            document.getElementById("btnClearManual").style.display = "none";
+          }
+        }
+        regenerateDesign();
+        return;
+      }
+
+      if (!state.editMode) return;
+      e.preventDefault();
+
+      // Right-click on a thread/jump midpoint diamond handle toggles it to/from a Jump Thread!
+      const midSegIdx = findNearestSegmentMidpointScreen(sx, sy, 12);
       const hitIdx = findNearestStitchIndexScreen(sx, sy, 12);
+      if (midSegIdx >= 1 && hitIdx < 0) {
+        toggleStitchJumpAt(midSegIdx);
+        return;
+      }
+
       if (hitIdx >= 0 && state.stitches.length > 2) {
         state.stitches.splice(hitIdx, 1);
         state.visibleCount = Math.min(state.visibleCount, state.stitches.length);
@@ -2839,7 +3093,10 @@
     window.addEventListener("keydown", (e) => {
       if (state.editMode && (e.key === "j" || e.key === "J")) {
         e.preventDefault();
-        const targetIdx = state.selectedStitchIdx >= 1 ? state.selectedStitchIdx : state.hoverStitchIdx;
+        const targetIdx =
+          state.hoverSegmentIdx >= 1
+            ? state.hoverSegmentIdx
+            : (state.selectedStitchIdx >= 1 ? state.selectedStitchIdx : state.hoverStitchIdx);
         if (targetIdx >= 1) {
           toggleStitchJumpAt(targetIdx);
         }
@@ -2849,6 +3106,10 @@
       if (e.key === "Enter") {
         e.preventDefault();
         commitActiveDraftObject();
+      } else if (e.key === "Backspace" && state.activeDraftPtsMm.length > 0) {
+        e.preventDefault();
+        state.activeDraftPtsMm.pop();
+        renderViewport();
       } else if (e.key === "Escape") {
         e.preventDefault();
         state.activeDraftPtsMm = [];
@@ -2861,12 +3122,53 @@
       const sx = e.clientX - rect.left;
       const sy = e.clientY - rect.top;
 
+      // 1. Check if user is Shift+Clicking an edge of a committed Fill Region / Outline to insert a new polygon node
+      if (e.button === 0 && e.shiftKey && state.manualObjects.length > 0 && !state.editMode) {
+        const edgeHit = findNearestManualRegionEdgeScreen(sx, sy, 13);
+        if (edgeHit) {
+          const [rawMx, rawMy] = screenToMm(sx, sy);
+          const [mx, my] = state.drawTool === "grid_outline" ? snapPointToStitchGridMm(rawMx, rawMy) : [rawMx, rawMy];
+          state.manualObjects[edgeHit.objIdx].pointsMm.splice(edgeHit.insertAtIdx, 0, [mx, my]);
+          state.draggingRegionPoint = { objIdx: edgeHit.objIdx, ptIdx: edgeHit.insertAtIdx };
+          regenerateDesign();
+          return;
+        }
+      }
+
+      // 2. Check if user clicked an existing square node of a committed Fill Region / Outline to drag & reshape it
+      if (e.button === 0 && state.manualObjects.length > 0 && state.activeDraftPtsMm.length === 0) {
+        const regNode = findNearestManualRegionNodeScreen(sx, sy, 11);
+        if (regNode) {
+          state.draggingRegionPoint = regNode;
+          return;
+        }
+      }
+
+      // 3. Active Freehand Fill Region / Grid Trace Outline / Satin Spine node dropping & loop closing
       if (state.drawTool && e.button === 0) {
-        const [rawMx, rawMy] = screenToMm(sx, sy);
-        const [mx, my] = snapPointToStitchGridMm(rawMx, rawMy);
         const draft = state.activeDraftPtsMm;
-        // Avoid duplicate vertex on double-click
-        if (!draft.length || Math.hypot(mx - draft[draft.length - 1][0], my - draft[draft.length - 1][1]) > 0.25) {
+        const isLoopTool = state.drawTool === "fill_region" || state.drawTool === "grid_outline";
+
+        // If user clicks the green Start Node #0 (with >= 3 points), close the loop & fill interior immediately!
+        if (isLoopTool && draft.length >= 3) {
+          const [startSx, startSy] = mmToScreen(draft[0][0], draft[0][1]);
+          if (Math.hypot(sx - startSx, sy - startSy) <= 18) {
+            commitActiveDraftObject();
+            return;
+          }
+        }
+
+        // If user clicks an already-placed draft node (other than closing on start node), let them drag it to adjust position
+        const draftHitIdx = findNearestDraftNodeScreen(sx, sy, 10);
+        if (draftHitIdx >= 0 && !(isLoopTool && draftHitIdx === 0 && draft.length >= 3)) {
+          state.draggingDraftPtIdx = draftHitIdx;
+          return;
+        }
+
+        // Otherwise drop a new node point (freehand for Draw Fill Region; grid-snapped only for Grid Trace Outline)
+        const [rawMx, rawMy] = screenToMm(sx, sy);
+        const [mx, my] = state.drawTool === "grid_outline" ? snapPointToStitchGridMm(rawMx, rawMy) : [rawMx, rawMy];
+        if (!draft.length || Math.hypot(mx - draft[draft.length - 1][0], my - draft[draft.length - 1][1]) > 0.2) {
           draft.push([mx, my]);
         }
         renderViewport();
@@ -2874,9 +3176,17 @@
       }
 
       if (state.editMode && e.button === 0) {
-        // Ctrl + Click (or Cmd + Click) on a stitch marker OR thread segment converts that thread into a Jump Thread (or back to Normal)
+        // Clicking directly on a Thread/Jump Segment Midpoint Diamond Handle immediately toggles Jump vs. Normal Thread!
+        const midSegIdx = findNearestSegmentMidpointScreen(sx, sy, 11);
+        const hitStitchIdx = findNearestStitchIndexScreen(sx, sy, 10);
+        if (midSegIdx >= 1 && (hitStitchIdx < 0 || e.ctrlKey || e.metaKey)) {
+          toggleStitchJumpAt(midSegIdx);
+          return;
+        }
+
+        // Ctrl + Click (or Cmd + Click) on a stitch marker OR anywhere along a thread segment toggles Jump Thread
         if (e.ctrlKey || e.metaKey) {
-          let targetIdx = findNearestStitchIndexScreen(sx, sy, 12);
+          let targetIdx = hitStitchIdx;
           if (targetIdx < 1) {
             targetIdx = findNearestSegmentIndexScreen(sx, sy, 14);
           }
@@ -2910,19 +3220,19 @@
         }
 
         // Click on an existing stitch marker to select & drag it
-        const hitIdx = findNearestStitchIndexScreen(sx, sy, 11);
-        if (hitIdx >= 0) {
-          state.draggingStitchIdx = hitIdx;
-          state.selectedStitchIdx = hitIdx;
+        if (hitStitchIdx >= 0) {
+          state.draggingStitchIdx = hitStitchIdx;
+          state.selectedStitchIdx = hitStitchIdx;
           updateJumpToggleButtonUI();
           renderViewport();
           return;
         }
 
-        // Click directly on a thread segment in Edit Mode selects its target stitch so user can click "Make Jump Thread (J)"
-        const segIdx = findNearestSegmentIndexScreen(sx, sy, 10);
+        // Click directly on a thread segment in Edit Mode selects its target stitch so user can press J or click "Make Jump Thread"
+        const segIdx = findNearestSegmentIndexScreen(sx, sy, 12);
         if (segIdx >= 1) {
           state.selectedStitchIdx = segIdx;
+          state.hoverSegmentIdx = segIdx;
           updateJumpToggleButtonUI();
           renderViewport();
           return;
@@ -2940,20 +3250,53 @@
       const sy = e.clientY - rect.top;
       if (sx >= 0 && sy >= 0 && sx <= rect.width && sy <= rect.height) {
         const [rawMx, rawMy] = screenToMm(sx, sy);
-        const [mx, my] = state.drawTool ? snapPointToStitchGridMm(rawMx, rawMy) : [rawMx, rawMy];
+        const [mx, my] =
+          state.drawTool === "grid_outline" ? snapPointToStitchGridMm(rawMx, rawMy) : [rawMx, rawMy];
         state.cursorMm = [mx, my];
         document.getElementById("coordReadout").textContent =
-          `X: ${mx.toFixed(1)} mm, Y: ${(-my).toFixed(1)} mm${state.drawTool && state.snapToGrid ? " [GRID SNAP]" : ""}`;
+          `X: ${mx.toFixed(1)} mm, Y: ${(-my).toFixed(1)} mm${state.drawTool === "grid_outline" && state.snapToGrid ? " [GRID SNAP]" : ""}`;
+
+        // Dragging an active draft node while drawing a Fill Region / Outline
+        if (state.draggingDraftPtIdx >= 0 && state.activeDraftPtsMm[state.draggingDraftPtIdx]) {
+          state.activeDraftPtsMm[state.draggingDraftPtIdx] = [mx, my];
+          renderViewport();
+          return;
+        }
+
+        // Dragging a committed Fill Region / Outline corner node dynamically reshapes the polygon & recalculates interior fill!
+        if (state.draggingRegionPoint) {
+          const { objIdx, ptIdx } = state.draggingRegionPoint;
+          const obj = state.manualObjects[objIdx];
+          if (obj && obj.pointsMm && obj.pointsMm[ptIdx]) {
+            obj.pointsMm[ptIdx] =
+              obj.type === "grid_outline" ? snapPointToStitchGridMm(rawMx, rawMy) : [rawMx, rawMy];
+            regenerateDesign();
+          }
+          return;
+        }
 
         if (state.drawTool) {
+          state.hoverDraftPtIdx = findNearestDraftNodeScreen(sx, sy, 11);
+          state.hoverRegionPoint = findNearestManualRegionNodeScreen(sx, sy, 11);
           renderViewport();
+        } else if (state.manualObjects.length > 0 && !state.editMode && !isDragging) {
+          const prevHov = state.hoverRegionPoint;
+          const nextHov = findNearestManualRegionNodeScreen(sx, sy, 11);
+          if (
+            (prevHov === null) !== (nextHov === null) ||
+            (prevHov && nextHov && (prevHov.objIdx !== nextHov.objIdx || prevHov.ptIdx !== nextHov.ptIdx))
+          ) {
+            state.hoverRegionPoint = nextHov;
+            canvas.style.cursor = nextHov ? "grab" : "grab";
+            renderViewport();
+          }
         }
 
         if (state.editMode && state.draggingStitchIdx >= 0) {
           const pt = state.stitches[state.draggingStitchIdx];
           if (pt) {
-            pt.x = mx;
-            pt.y = my;
+            pt.x = rawMx;
+            pt.y = rawMy;
             recomputeJumpFlags();
             renderViewport();
           }
@@ -2961,11 +3304,18 @@
         }
 
         if (state.editMode && !isDragging) {
-          const hoverIdx = findNearestStitchIndexScreen(sx, sy, 11);
-          if (hoverIdx !== state.hoverStitchIdx) {
+          const midSegIdx = findNearestSegmentMidpointScreen(sx, sy, 11);
+          const hoverIdx = findNearestStitchIndexScreen(sx, sy, 10);
+          const segIdx = midSegIdx >= 1 ? midSegIdx : (hoverIdx < 0 ? findNearestSegmentIndexScreen(sx, sy, 10) : -1);
+
+          if (hoverIdx !== state.hoverStitchIdx || segIdx !== state.hoverSegmentIdx) {
             state.hoverStitchIdx = hoverIdx;
+            state.hoverSegmentIdx = segIdx;
             updateJumpToggleButtonUI();
-            canvas.style.cursor = hoverIdx >= 0 ? "grab" : (e.shiftKey ? "copy" : "crosshair");
+            canvas.style.cursor =
+              midSegIdx >= 1 || segIdx >= 1
+                ? "pointer"
+                : (hoverIdx >= 0 ? "grab" : (e.shiftKey ? "copy" : "crosshair"));
             renderViewport();
           }
         }
@@ -2978,6 +3328,8 @@
 
     window.addEventListener("mouseup", () => {
       isDragging = false;
+      state.draggingDraftPtIdx = -1;
+      state.draggingRegionPoint = null;
       if (state.draggingStitchIdx >= 0) {
         const draggedIdx = state.draggingStitchIdx;
         state.draggingStitchIdx = -1;
